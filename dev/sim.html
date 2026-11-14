@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>sim dev — 燼原戰線</title>
+    <style>
+      html, body { margin: 0; min-height: 100%; background: #0b0d10; color: #e8e6e1; font: 13px/1.45 -apple-system, 'PingFang TC', 'Helvetica Neue', sans-serif; }
+      header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 10px 14px; background: #14181d; border-bottom: 1px solid #262c34; }
+      header h1 { font-size: 14px; margin: 0 8px 0 0; letter-spacing: .12em; font-weight: 600; }
+      label { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+      select, button { background: #1d232b; color: inherit; border: 1px solid #343c47; border-radius: 4px; padding: 4px 8px; font: inherit; }
+      button { cursor: pointer; }
+      main { display: flex; flex-wrap: wrap; gap: 16px; padding: 14px; align-items: flex-start; }
+      canvas { background: #000; border: 1px solid #262c34; max-width: 100%; cursor: crosshair; }
+      pre { margin: 0; font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; min-width: 280px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>模擬除錯檢視 Sim debug</h1>
+      <label>情境 <select id="scn">
+        <option value="match">腳本對戰 (48×48)</option>
+        <option value="battle">300 單位會戰 (96×96)</option>
+        <option value="march">繞障行軍 (64×64)</option>
+      </select></label>
+      <label>速度 <select id="speed"><option value="0">暫停</option><option value="1">1×</option><option value="4" selected>4×</option><option value="16">16×</option><option value="64">64×</option></select></label>
+      <label>迷霧 <select id="fog"><option value="-1">關</option><option value="0">玩家 0</option><option value="1">玩家 1</option></select></label>
+      <button id="restart">重新開始</button>
+      <span>左鍵:玩家 0 全軍攻擊移動 · 右鍵:玩家 1</span>
+    </header>
+    <main>
+      <canvas id="view" width="768" height="768"></canvas>
+      <pre id="info"></pre>
+    </main>
+    <script type="module" src="/src/sim/dev.ts"></script>
+  </body>
+</html>

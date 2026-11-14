@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>燼原戰線 — audio dev</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; background: #0b0d10; color: #e8e6e1; font: 13px/1.4 -apple-system, 'PingFang TC', 'Helvetica Neue', sans-serif; }
+      main { max-width: 1180px; margin: 0 auto; padding: 16px; }
+      h1 { font-size: 18px; font-weight: 600; letter-spacing: 0.08em; margin: 0 0 8px; }
+      h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: #ff8a2a; margin: 18px 0 6px; }
+      .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+      button { background: #1b2026; color: inherit; border: 1px solid #2c343d; border-radius: 6px; padding: 5px 9px; font: inherit; cursor: pointer; }
+      button:hover { border-color: #ff8a2a; }
+      button.h { border-left: 3px solid #3fa7ff; }
+      button.f { border-left: 3px solid #ff8a2a; }
+      button.on { background: #ff8a2a; color: #0b0d10; }
+      #status { position: sticky; top: 0; z-index: 2; background: #12161b; border: 1px solid #2c343d; border-radius: 8px; padding: 8px 10px; display: grid; grid-template-columns: 220px 1fr; gap: 10px; align-items: center; }
+      #meter { height: 14px; background: #1b2026; border-radius: 4px; overflow: hidden; position: relative; }
+      #meter i { position: absolute; inset: 0 auto 0 0; width: 0; background: linear-gradient(90deg, #35d6c4, #e6c229 70%, #e5484d); }
+      #meter b { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; }
+      #info { font-family: ui-monospace, Menlo, monospace; font-size: 11px; white-space: pre-wrap; color: #9fb0c0; }
+      label { display: inline-flex; gap: 6px; align-items: center; }
+      input[type='range'] { width: 130px; }
+      table { border-collapse: collapse; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+      td, th { padding: 2px 8px; border-bottom: 1px solid #1f262d; text-align: right; }
+      td:first-child, th:first-child { text-align: left; }
+      .bad { color: #e5484d; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>燼原戰線 · 音效開發頁 <small style="opacity: 0.6">audio dev (click anything to unlock)</small></h1>
+      <div id="status">
+        <div><div id="meter"><i></i><b></b></div></div>
+        <div id="info"></div>
+      </div>
+      <div id="app"></div>
+    </main>
+    <script type="module" src="/src/audio/dev.ts"></script>
+  </body>
+</html>

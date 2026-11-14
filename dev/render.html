@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>render dev — 燼原戰線 Cinder Front</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0b0d10; overflow: hidden; overscroll-behavior: none; }
+      body { font: 12px/1.35 -apple-system, 'PingFang TC', 'Helvetica Neue', sans-serif; color: #dcd9d2; -webkit-user-select: none; user-select: none; }
+      #game, #labels { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; display: block; }
+      #labels { pointer-events: none; }
+
+      #panel { position: fixed; top: 6px; right: 6px; width: 252px; max-height: calc(100vh - 12px); display: flex; flex-direction: column;
+        background: rgba(14, 17, 21, 0.9); border: 1px solid #2c333c; border-radius: 6px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5); }
+      #panel.hidden { display: none; }
+      #panelHead { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid #2c333c; cursor: pointer; }
+      #panelHead b { flex: 1; font-weight: 600; letter-spacing: 0.04em; color: #f0b65a; }
+      #panelHead span { opacity: 0.6; font-size: 11px; }
+      #stats { margin: 0; padding: 6px 8px; font: 11px/1.4 ui-monospace, Menlo, monospace; color: #9fe3b0; white-space: pre; overflow: hidden; border-bottom: 1px solid #2c333c; }
+      #panelBody { overflow-y: auto; padding: 2px 8px 8px; }
+      #panel.collapsed #panelBody { display: none; }
+
+      details { border-bottom: 1px solid #20262d; padding: 3px 0 5px; }
+      summary { cursor: pointer; padding: 2px 0; color: #8fa3b8; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; outline: none; }
+      .row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 3px; }
+      button { font: inherit; color: #dcd9d2; background: #222933; border: 1px solid #3a4450; border-radius: 4px; padding: 2px 7px; cursor: pointer; }
+      button:hover { background: #2e3845; border-color: #56677a; }
+      button.on { background: #7a4d12; border-color: #f0b65a; color: #fff; }
+      label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+      label.wide { width: 100%; justify-content: space-between; }
+      input[type='checkbox'] { margin: 0; accent-color: #f0b65a; }
+      select { font: inherit; color: #dcd9d2; background: #1a2027; border: 1px solid #3a4450; border-radius: 4px; padding: 1px 2px; max-width: 160px; }
+      #minimap { display: block; width: 220px; height: 220px; margin: 5px auto 0; background: #000; border: 1px solid #3a4450; cursor: crosshair; }
+      .help { opacity: 0.6; font-size: 11px; white-space: normal; margin-top: 4px; }
+
+      #icons { position: fixed; left: 6px; top: 6px; max-width: calc(100vw - 280px); max-height: calc(100vh - 12px); overflow: auto;
+        background: rgba(14, 17, 21, 0.94); border: 1px solid #2c333c; border-radius: 6px; padding: 8px; }
+      #icons canvas { display: block; }
+      #err { position: fixed; left: 6px; bottom: 6px; max-width: min(720px, calc(100vw - 280px)); max-height: 40vh; overflow: auto; margin: 0; padding: 8px 10px;
+        background: rgba(70, 10, 12, 0.94); border: 1px solid #e5484d; border-radius: 6px; color: #ffd7d7;
+        font: 11px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; -webkit-user-select: text; user-select: text; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <canvas id="labels"></canvas>
+    <div id="icons" hidden><canvas id="iconSheet"></canvas></div>
+    <pre id="err" hidden></pre>
+    <div id="panel">
+      <div id="panelHead" title="click: collapse / expand — key H: hide panel"><b>render dev 渲染測試</b><span id="panelHint">▾</span></div>
+      <pre id="stats">starting…</pre>
+      <div id="panelBody"></div>
+    </div>
+    <script type="module" src="/src/render/dev.ts"></script>
+  </body>
+</html>
