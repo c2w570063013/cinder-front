@@ -1,12 +1,12 @@
 // Alert / toast feed. Located alerts can be clicked (or Space) to jump the camera there.
 import { el, glyph } from '../dom';
 
-export type ToastKind = 'info' | 'good' | 'warn' | 'bad';
+export type ToastKind = 'info' | 'good' | 'warn' | 'bad' | 'chat';
 
 export interface Feed {
   el: HTMLElement;
   /** `key` coalesces repeats within a short window into a ×N counter. */
-  push(text: string, kind: ToastKind, opts?: { key?: string; pos?: { x: number; y: number }; sub?: string }): void;
+  push(text: string, kind: ToastKind, opts?: { key?: string; pos?: { x: number; y: number }; sub?: string; from?: { name: string; color: string } }): void;
   update(now: number): void;
   clear(): void;
 }
@@ -52,9 +52,15 @@ export function createFeed(onJump: (pos: { x: number; y: number }) => void): Fee
       }
       const item = el('div', 'cf-toast is-' + kind);
       const ic = el('span', 'cf-toast-ic');
-      ic.innerHTML = glyph(kind === 'good' ? 'ok' : kind === 'info' ? 'info' : 'alert', 15);
+      ic.innerHTML = glyph(kind === 'good' ? 'ok' : kind === 'info' ? 'info' : kind === 'chat' ? 'chat' : 'alert', 15);
       const body = el('div', 'cf-toast-body');
-      body.append(el('b', '', text));
+      const line = el('b');
+      if (opts?.from) {
+        item.style.setProperty('--cf-chat', opts.from.color);
+        line.append(el('span', 'cf-toast-from', opts.from.name));
+      }
+      line.append(text);
+      body.append(line);
       if (opts?.sub) body.append(el('small', '', opts.sub));
       const countEl = el('span', 'cf-toast-n');
       item.append(ic, body, countEl);
@@ -67,7 +73,7 @@ export function createFeed(onJump: (pos: { x: number; y: number }) => void): Fee
         item.addEventListener('click', () => onJump(pos));
       }
       root.append(item);
-      const t: Toast = { key, root: item, countEl, count: 1, until: now + LIFE, leaving: false, urgent: kind === 'bad' };
+      const t: Toast = { key, root: item, countEl, count: 1, until: now + (kind === 'chat' ? LIFE * 1.6 : LIFE), leaving: false, urgent: kind === 'bad' };
       toasts.push(t);
       const live = toasts.filter((x) => !x.leaving);
       // over capacity: evict the oldest routine message before any urgent alert

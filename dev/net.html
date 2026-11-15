@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>net dev — 燼原戰線</title>
+    <style>
+      html, body { margin: 0; min-height: 100%; background: #0b0d10; color: #e8e6e1; font: 13px/1.45 -apple-system, 'PingFang TC', 'Helvetica Neue', sans-serif; }
+      header { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 14px; background: #14181d; border-bottom: 1px solid #262c34; }
+      header h1 { font-size: 14px; margin: 0 8px 0 0; letter-spacing: .12em; font-weight: 600; }
+      label { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+      input, select, button { background: #1d232b; color: inherit; border: 1px solid #343c47; border-radius: 4px; padding: 4px 8px; font: inherit; }
+      button { cursor: pointer; }
+      button:disabled { opacity: .45; cursor: default; }
+      main { display: grid; grid-template-columns: minmax(320px, 1.3fr) minmax(280px, 1fr); gap: 14px; padding: 14px; }
+      section { background: #12161b; border: 1px solid #262c34; border-radius: 6px; padding: 10px 12px; min-width: 0; }
+      h2 { font-size: 12px; margin: 0 0 8px; color: #9aa3ad; letter-spacing: .1em; font-weight: 600; }
+      table { border-collapse: collapse; width: 100%; }
+      td, th { padding: 3px 6px; border-bottom: 1px solid #1f252d; text-align: left; white-space: nowrap; }
+      th { color: #8a939d; font-weight: 500; }
+      .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -2px; margin-right: 4px; }
+      pre { margin: 0; font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
+      #log { max-height: 260px; overflow: auto; }
+      .state-running { color: #7bd148; } .state-waiting { color: #e6c229; } .state-desync, .state-hostLost { color: #ff6a6a; } .state-ended { color: #9aa3ad; }
+      .big { font: 600 18px ui-monospace, Menlo, monospace; }
+      @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>區域網路除錯 Net debug</h1>
+      <span id="transport"></span>
+      <label>名稱 <input id="name" size="10" /></label>
+      <label>房間 <input id="room" size="12" placeholder="(預設)" /></label>
+      <button id="host">建立房間</button>
+      <button id="browse">瀏覽房間</button>
+      <button id="leave">離開</button>
+      <label><input type="checkbox" id="bot" checked /> 腳本玩家</label>
+      <span id="phase"></span>
+    </header>
+    <main>
+      <section>
+        <h2 id="leftTitle">房間列表</h2>
+        <div id="left"></div>
+      </section>
+      <section>
+        <h2>對戰狀態</h2>
+        <div id="match"><pre>—</pre></div>
+        <div id="matchBtns" style="display:none; gap:8px; margin-top:8px"><button id="freeze">凍結(模擬卡住)</button><button id="diverge">製造不同步</button><button id="surrender">投降</button></div>
+      </section>
+      <section style="grid-column: 1 / -1">
+        <h2>聊天與事件</h2>
+        <div style="display:flex; gap:8px; margin-bottom:8px"><input id="chat" style="flex:1" placeholder="輸入訊息後按 Enter" /></div>
+        <pre id="log"></pre>
+      </section>
+    </main>
+    <script type="module" src="/src/net/dev.ts"></script>
+  </body>
+</html>

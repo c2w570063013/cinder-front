@@ -1,0 +1,37 @@
+// Every user-facing string the net module emits (zh-Hant).
+import type { RefuseReason } from './wire';
+
+export const T = {
+  noTransport: '此環境無法進行區域網路對戰,請使用 Mac 版遊戲。',
+  noMaps: '沒有可用的地圖。',
+  hostFailed: (m: string): string => (m ? `無法建立房間:${m}` : '無法建立房間。'),
+  connectFailed: '無法連線到房間。',
+  connectTimeout: '連線逾時,無法加入房間。',
+  incompatible: '對方的遊戲版本與你不同,無法加入此房間。',
+  refuse: {
+    build: '遊戲版本不同,無法加入此房間。',
+    proto: '連線協定版本不同,無法加入此房間。',
+    full: '房間已滿。',
+    match: '房間正在對戰中,無法加入。',
+    bad: '加入房間失敗。',
+  } satisfies Record<RefuseReason, string>,
+  kicked: '你已被房主移出房間。',
+  hostClosed: '房主已關閉房間。',
+  hostLostLobby: '與房主的連線中斷。',
+  mapTooSmall: (n: number): string => `此地圖最多只能容納 ${n} 名玩家,請先空出座位。`,
+  cannotStart: '尚有玩家未準備,或隊伍少於兩隊,無法開始。',
+  mapMissing: '找不到房主選擇的地圖,遊戲版本可能不同。',
+  noSeat: '對戰資料中找不到你的座位。',
+  joined: (n: string): string => `${n} 加入了房間`,
+  left: (n: string): string => `${n} 離開了房間`,
+  lost: (n: string): string => `${n} 已離線`,
+  kickedOther: (n: string): string => `${n} 已被移出房間`,
+  matchLeft: (n: string): string => `${n} 離開了對戰,視為投降`,
+  matchLost: (n: string): string => `${n} 已離線,視為投降`,
+  matchTimeout: (n: string): string => `${n} 連線逾時,已被移出對戰並視為投降`,
+  hostGoneMatch: '房主已離線,對戰無法繼續。',
+  desync: '各玩家的遊戲狀態不一致,對戰無法繼續。',
+  aiName: (k: number): string => `電腦 ${k}`,
+  defaultPlayer: '指揮官',
+  defaultRoom: (n: string): string => `${n} 的房間`,
+};

@@ -93,6 +93,39 @@ export function toggle(value: boolean, onChange: (v: boolean) => void, click?: (
   return b;
 }
 
+export function selectBox<T extends string>(options: { value: T; label: string }[], value: T, onChange: (v: T) => void, click?: () => void): HTMLSelectElement {
+  const s = el('select', 'cf-select');
+  for (const o of options) {
+    const op = el('option', '', o.label);
+    op.value = o.value;
+    s.append(op);
+  }
+  s.value = value;
+  s.addEventListener('change', () => {
+    click?.();
+    onChange(s.value as T);
+  });
+  return s;
+}
+
+export function textInput(value: string, opts: { placeholder?: string; maxLength?: number; onInput?: (v: string) => void; onEnter?: (v: string) => void }): HTMLInputElement {
+  const i = el('input', 'cf-input');
+  i.type = 'text';
+  i.value = value;
+  i.spellcheck = false;
+  i.autocomplete = 'off';
+  if (opts.placeholder) i.placeholder = opts.placeholder;
+  if (opts.maxLength) i.maxLength = opts.maxLength;
+  i.addEventListener('input', () => opts.onInput?.(i.value));
+  i.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault();
+      opts.onEnter?.(i.value);
+    }
+  });
+  return i;
+}
+
 /** Labelled row: 「標題 / small English」 on the left, control on the right. */
 export function row(label: string, sub: string | null, control: HTMLElement): HTMLElement {
   const r = el('div', 'cf-row');

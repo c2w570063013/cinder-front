@@ -28,6 +28,7 @@ src/ui/       HUD, input, menus                   → exports createGameUi, crea
 src/ai/       skirmish AI                         → exports createAi              (session: ai-maps)
 src/maps/     map generators                      → exports MAPS: MapInfo[]       (session: ai-maps)
 src/audio/    synthesised sfx / music / announcer → exports createAudio           (session: audio-mac)
+src/net/      LAN multiplayer: lobby + lockstep     → exports createNet             (session: net)
 mac/          Swift WKWebView app + build script                                  (session: audio-mac)
 src/main.ts   game loop + wiring (commander)
 dev/          per-session dev pages: dev/<session>.html (+ src/<module>/dev.ts)
@@ -45,6 +46,9 @@ input → ui → Command[] ─┐
 
 - `src/core/types.ts` is the single source of truth for World / Entity / Command / SimEvent.
   `src/core/api.ts` defines the exact interface each module's `index.ts` must export. Read both first.
+- LAN multiplayer is deterministic lockstep (`NetApi` / `NetMatch` in `core/api.ts`): peers exchange only
+  `Command`s, so anything that makes two machines step differently is a desync bug. The mac app provides the
+  transport as `window.cinderNative.net` (`NativeNetBridge`: Bonjour + TCP).
 - Only the sim mutates `World`. Render, ui, ai and audio treat it as **read-only**.
 - Modules import from `src/core` and `src/data` freely, and from each other **only via the types in
   `core/api.ts`** (dependencies are passed in, see `UiDeps`, `CreateAi`). Exception: dev pages and

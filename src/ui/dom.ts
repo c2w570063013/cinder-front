@@ -110,4 +110,6 @@ export const GLYPHS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   flag: '<path d="M6 21V4"/><path d="M6 5h12l-3 4 3 4H6"/>',
   pause: '<path d="M8.500 5v14M15.500 5v14"/>',
+  chat: '<path d="M4 5.500h16v10H11l-4.500 3.500V15.500H4Z"/><path d="M8 10.500h8"/>',
+  link: '<path d="M5 12h3l2-5 4 10 2-5h3"/>',
 } as const;

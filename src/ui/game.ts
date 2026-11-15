@@ -3,10 +3,12 @@ import type { CreateGameUi, GameUi, ViewState } from '../core/api';
 import { TICK_RATE } from '../core/constants';
 import type { Entity, EntityId, MovementType, Player, SimEvent, SupportPowerId, World } from '../core/types';
 import { SUPPORT_POWERS } from '../data';
+import { orderChord, type Mods, type OrderChord } from './chord';
 import { applyCursor, type CursorName } from './cursors';
 import { buildingDef, button, clamp, el, fmtTime, glyph, hexToRgbTriplet, isMac, nameOf, unitDef } from './dom';
 import { createFeed } from './hud/feed';
 import { createPanel } from './hud/panel';
+import { createNetHud, type NetHud } from './hud/netHud';
 import { createPauseMenu } from './hud/pause';
 import { createSelectionPanel, type SelCommand } from './hud/selection';
 import { onSettingsChange, settings } from './settings';
@@ -55,16 +57,20 @@ interface Drag {
 const DRAG_THRESHOLD = 5;
 const DOUBLE_MS = 340;
 const EDGE_PX = 6;
-const BUILD_KEYS = ['KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT', 'KeyY', 'KeyU', 'KeyI', 'KeyO'];
+const TAP_MS = 420;
 
 export const createGameUi: CreateGameUi = (deps) => {
   injectStyle();
   const { root, canvas, renderer, sim, audio } = deps;
   const me = deps.viewer;
-  try {
-    deps.setSpeed(settings.gameSpeed);
-  } catch {
-    /* main not ready */
+  /** LAN match: no pausing, no speed control, net overlays + chat. */
+  const lan = !!deps.net;
+  if (!lan) {
+    try {
+      deps.setSpeed(settings.gameSpeed);
+    } catch {
+      /* main not ready */
+    }
   }
 
   const view: ViewState = {
@@ -98,7 +104,7 @@ export const createGameUi: CreateGameUi = (deps) => {
     audio.playUi('click');
     toggleFullscreen();
   });
-  fsBtn.title = '全螢幕 (F)';
+  fsBtn.title = isMac ? '全螢幕 (⌃⌘F)' : '全螢幕 (F11)';
   top.append(menuBtn, clock, fps, fsBtn);
 
   const banner = el('div', 'cf-banner cf-glass');
@@ -133,16 +139,34 @@ export const createGameUi: CreateGameUi = (deps) => {
   const pause = createPauseMenu(deps, {
     onOpen: () => {
       resetInput();
-      deps.setPaused(true);
+      netHud?.closeChat();
+      if (!lan) deps.setPaused(true);
     },
-    onClose: () => deps.setPaused(userPaused),
+    onClose: () => {
+      if (!lan) deps.setPaused(userPaused);
+    },
     surrender: () => {
       deps.send({ type: 'surrender', player: me });
     },
     canSurrender: () => !!world && !ended && !world.players[me]?.defeated,
   });
 
-  hud.append(top, banner, feed.el, selPanel.el, panel.el, pause.el);
+  const netHud: NetHud | null = lan
+    ? createNetHud({
+        deps,
+        hud,
+        feed,
+        confirmLeave: () => pause.openQuit(),
+        onBlock: () => {
+          resetInput();
+          setMode({ kind: 'normal' });
+          if (pause.isOpen) pause.close();
+        },
+      })
+    : null;
+  if (netHud) top.insertBefore(netHud.chips, fsBtn);
+
+  hud.append(top, banner, feed.el, selPanel.el, panel.el, ...(netHud?.els ?? []), pause.el);
 
   // ───────────────────────── state ─────────────────────────
   let world: World | null = null;
@@ -171,6 +195,18 @@ export const createGameUi: CreateGameUi = (deps) => {
   let fpsFrames = 0;
   let fpsAt = performance.now();
   let fpsShown = false;
+  /** Modifier keys as last seen on a key or pointer event (for the hover cursor of modifier-click orders). */
+  const mods = { ctrlKey: false, metaKey: false, altKey: false, shiftKey: false };
+  /** Z held = waypoint mode: every order click is queued. */
+  let zDown = false;
+  let waypoints: { x: number; y: number; kind: 'move' | 'attack' | 'rally'; at: number }[] = [];
+  /** U toggles permanent health bars; Alt still shows them while held. */
+  let alwaysHealth = false;
+  /** F: camera follows this entity until the player moves the camera. */
+  let follow: EntityId | null = null;
+  const bookmarks: ({ x: number; y: number; zoom: number } | undefined)[] = [];
+  let lastTTap = 0;
+  let cycleLast = { kind: '', id: -1 };
 
   const offs: (() => void)[] = [];
   function on<T extends EventTarget>(target: T, type: string, fn: (e: any) => void, opts?: AddEventListenerOptions | boolean): void {
@@ -225,6 +261,7 @@ export const createGameUi: CreateGameUi = (deps) => {
   /** Shift the view by a screen-space delta (css px). */
   function panScreen(dx: number, dy: number): void {
     if (dx === 0 && dy === 0) return;
+    follow = null;
     const cx = rect.width / 2;
     const cy = rect.height / 2;
     const a = renderer.screenToWorld(cx, cy);
@@ -244,6 +281,7 @@ export const createGameUi: CreateGameUi = (deps) => {
     clampCam();
   }
   function centerOn(x: number, y: number): void {
+    follow = null;
     cam.x = x;
     cam.y = y;
     clampCam();
@@ -281,7 +319,17 @@ export const createGameUi: CreateGameUi = (deps) => {
     ptr.y = e.clientY - rect.top;
   }
   function isSecondary(e: PointerEvent | MouseEvent): boolean {
-    return e.button === 2 || (isMac && e.button === 0 && e.ctrlKey);
+    // optional (Settings): ⌃-click acts as a right click for single-button mice; otherwise ⌃-click = force fire
+    return e.button === 2 || (settings.ctrlClickRight && isMac && e.button === 0 && e.ctrlKey);
+  }
+  function trackMods(e: { ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean }): void {
+    mods.ctrlKey = e.ctrlKey;
+    mods.metaKey = e.metaKey;
+    mods.altKey = e.altKey;
+    mods.shiftKey = e.shiftKey;
+  }
+  function chord(m: Mods): OrderChord | null {
+    return orderChord(m, zDown, settings.ctrlClickRight && isMac);
   }
 
   function analyze(w: World): SelInfo {
@@ -503,6 +551,61 @@ export const createGameUi: CreateGameUi = (deps) => {
     }
   }
 
+  function addWaypoint(x: number, y: number, kind: 'move' | 'attack'): void {
+    const m = { x, y, kind, at: view.time };
+    view.markers.push(m);
+    if (zDown) waypoints.push(m);
+  }
+
+  /** Modifier-click orders. Returns false when the chord does not apply (no own units selected). */
+  function chordOrder(w: World, c: OrderChord, picked: EntityId | null, shift: boolean): boolean {
+    const s = analyze(w);
+    if (!s.unitIds.length) return false;
+    const raw = renderer.screenToWorld(ptr.x, ptr.y);
+    if (raw.x < 0 || raw.y < 0 || raw.x >= w.map.width || raw.y >= w.map.height) return true;
+    const p = { x: raw.x, y: raw.y };
+    const t = picked != null ? w.entities.get(picked) : undefined;
+    const queue = zDown || (c !== 'attackMove' && shift) || undefined;
+    switch (c) {
+      case 'attackMove':
+        if (t && isEnemy(w, t.owner)) {
+          deps.send({ type: 'attack', player: me, ids: s.fighters.length ? s.fighters : s.unitIds, targetId: t.id, queue });
+          addWaypoint(t.x, t.y, 'attack');
+        } else {
+          deps.send({ type: 'attackMove', player: me, ids: s.unitIds, x: p.x, y: p.y, queue });
+          addWaypoint(p.x, p.y, 'attack');
+        }
+        if (s.firstUnitDef) audio.playAck(s.firstUnitDef, 'attack');
+        return true;
+      case 'force':
+        if (t && isEnemy(w, t.owner)) {
+          // straight attack: no capture / harvest / dock smart orders
+          deps.send({ type: 'attack', player: me, ids: s.fighters.length ? s.fighters : s.unitIds, targetId: t.id, queue });
+          addWaypoint(t.x, t.y, 'attack');
+          if (s.firstUnitDef) audio.playAck(s.firstUnitDef, 'attack');
+        } else {
+          audio.playUi('error');
+          feed.push(t ? '無法攻擊己方或友軍目標' : '無法攻擊地面', 'warn', { key: t ? 'ff-own' : 'ff-ground', sub: '強制攻擊目前只能指定敵方目標' });
+        }
+        return true;
+      case 'forceMove': {
+        const x = t ? t.x : p.x;
+        const y = t ? t.y : p.y;
+        deps.send({ type: 'move', player: me, ids: s.unitIds, x, y, queue });
+        addWaypoint(x, y, 'move');
+        if (s.firstUnitDef) audio.playAck(s.firstUnitDef, 'move');
+        return true;
+      }
+      case 'waypoint': {
+        const it = resolve(w, ptr.x, ptr.y, picked, false);
+        if (it.k === 'none' || it.k === 'select' || it.k === 'rally') return true;
+        issue(w, it, true);
+        if (it.k === 'move') waypoints.push(view.markers[view.markers.length - 1]);
+        return true;
+      }
+    }
+  }
+
   /** Order from the minimap (secondary click): move / attack-move / rally at a world point. */
   function commandAtWorld(x: number, y: number, queue: boolean): void {
     if (!world || ended) return;
@@ -601,7 +704,7 @@ export const createGameUi: CreateGameUi = (deps) => {
       default:
         break;
     }
-    setBanner(text ? text : userPaused ? '已暫停' : '', text ? 'Esc / 次鍵 取消' : userPaused ? '按 P 繼續' : '');
+    setBanner(text ? text : userPaused ? '已暫停' : '', text ? 'Esc / 次鍵 取消' : userPaused ? '按 Pause 繼續' : '');
   }
   function setBanner(text: string, hint: string): void {
     const key = text + '|' + hint;
@@ -700,16 +803,16 @@ export const createGameUi: CreateGameUi = (deps) => {
         }
         const id = pick(ptr.x, ptr.y);
         const t = id != null ? w.entities.get(id) : undefined;
-        const q = e.shiftKey || undefined;
+        const q = e.shiftKey || zDown || undefined;
         if (t && isEnemy(w, t.owner)) {
           deps.send({ type: 'attack', player: me, ids: s.unitIds, targetId: t.id, queue: q });
-          marker(t.x, t.y, 'attack');
+          addWaypoint(t.x, t.y, 'attack');
         } else {
           deps.send({ type: 'attackMove', player: me, ids: s.unitIds, x: p.x, y: p.y, queue: q });
-          marker(p.x, p.y, 'attack');
+          addWaypoint(p.x, p.y, 'attack');
         }
         if (s.firstUnitDef) audio.playAck(s.firstUnitDef, 'attack');
-        if (!e.shiftKey) setMode({ kind: 'normal' });
+        if (!q) setMode({ kind: 'normal' });
         break;
       }
       case 'power': {
@@ -778,6 +881,7 @@ export const createGameUi: CreateGameUi = (deps) => {
 
   function onPointerMove(e: PointerEvent): void {
     setPtr(e);
+    trackMods(e);
     if (!drag || !world) return;
     const dx = ptr.x - drag.lastX;
     const dy = ptr.y - drag.lastY;
@@ -805,13 +909,16 @@ export const createGameUi: CreateGameUi = (deps) => {
     const w = world;
     if (d.type === 'select') {
       if (d.moved) boxSelect(w, d);
-      else primaryClick(w, e.shiftKey);
-    } else if (d.type === 'secondary' && !d.moved) secondaryClick(w, e.shiftKey);
+      else primaryClick(w, e);
+    } else if (d.type === 'secondary' && !d.moved) secondaryClick(w, e);
   }
 
-  function primaryClick(w: World, shift: boolean): void {
+  function primaryClick(w: World, e: PointerEvent): void {
+    const shift = e.shiftKey;
     const picked = pick(ptr.x, ptr.y);
     if (settings.scheme === 'classic') {
+      const c = chord(e);
+      if (c && chordOrder(w, c, picked, shift)) return;
       const it = resolve(w, ptr.x, ptr.y, picked, true);
       if (it.k === 'select') selectClick(w, it.id, shift);
       else if (it.k !== 'none') issue(w, it, shift);
@@ -819,7 +926,8 @@ export const createGameUi: CreateGameUi = (deps) => {
     else if (!shift) view.selection.clear();
   }
 
-  function secondaryClick(w: World, shift: boolean): void {
+  function secondaryClick(w: World, e: PointerEvent): void {
+    const shift = e.shiftKey;
     if (mode.kind !== 'normal') {
       cancelMode();
       return;
@@ -832,7 +940,10 @@ export const createGameUi: CreateGameUi = (deps) => {
       }
       return;
     }
-    const it = resolve(w, ptr.x, ptr.y, pick(ptr.x, ptr.y), false);
+    const picked = pick(ptr.x, ptr.y);
+    const c = chord(e);
+    if (c && chordOrder(w, c, picked, shift)) return;
+    const it = resolve(w, ptr.x, ptr.y, picked, false);
     if (it.k !== 'none' && it.k !== 'select') issue(w, it, shift);
   }
 
@@ -985,10 +1096,14 @@ export const createGameUi: CreateGameUi = (deps) => {
     if (!world) return;
     const w = world;
     if (assign) {
+      const had = (groups[n] ?? []).length > 0;
       groups[n] = [...view.selection].filter((id) => w.entities.get(id)?.owner === me);
       if (groups[n].length) {
         audio.playUi('click');
         feed.push(`編隊 ${n} 已設定`, 'info', { key: 'group' + n });
+      } else if (had) {
+        audio.playUi('cancel');
+        feed.push(`編隊 ${n} 已清除`, 'info', { key: 'groupclear' + n });
       }
       return;
     }
@@ -996,7 +1111,7 @@ export const createGameUi: CreateGameUi = (deps) => {
     groups[n] = g;
     if (!g.length) return;
     const now = performance.now();
-    const dbl = lastGroupTap.n === n && now - lastGroupTap.at < 380;
+    const dbl = lastGroupTap.n === n && now - lastGroupTap.at < TAP_MS;
     lastGroupTap = { n, at: now };
     if (add) dropForeign(w);
     setSelection(g, add);
@@ -1026,18 +1141,130 @@ export const createGameUi: CreateGameUi = (deps) => {
       ackSelect(w.entities.get(ids[0]));
     }
   }
+  /** T: every own unit of the selected types on screen; T twice quickly: on the whole map. */
+  function selectSameType(): void {
+    if (!world) return;
+    const w = world;
+    const types = new Set<string>();
+    for (const id of view.selection) {
+      const e = w.entities.get(id);
+      if (e && e.owner === me) types.add(e.defId);
+    }
+    if (!types.size) return;
+    const now = performance.now();
+    const whole = now - lastTTap < TAP_MS;
+    lastTTap = whole ? 0 : now;
+    let ids: EntityId[];
+    if (whole) {
+      ids = [];
+      for (const e of w.entities.values()) if (e.owner === me && types.has(e.defId)) ids.push(e.id);
+    } else ids = onScreenOwn(w, (e) => types.has(e.defId));
+    if (!ids.length) return;
+    setSelection(ids);
+    ackSelect(w.entities.get(ids[0]));
+    if (whole) feed.push(`已選取全地圖 ${ids.length} 個同類單位`, 'info', { key: 'tsel' });
+  }
+  /** N / M: next / previous own unit (Y: veterans and elites only), centring the camera. */
+  function cycleUnits(dir: 1 | -1, veteransOnly: boolean): void {
+    if (!world) return;
+    const w = world;
+    const list: Entity[] = [];
+    for (const e of w.entities.values()) if (e.owner === me && e.kind === 'unit' && (!veteransOnly || e.rank >= 1)) list.push(e);
+    if (!list.length) {
+      if (veteransOnly) feed.push('沒有老兵或菁英單位', 'info', { key: 'novet' });
+      audio.playUi('error');
+      return;
+    }
+    list.sort((a, b) => a.id - b.id);
+    const kind = veteransOnly ? 'vet' : 'all';
+    const cur = view.selection.size === 1 ? (view.selection.values().next().value as EntityId) : cycleLast.kind === kind ? cycleLast.id : -1;
+    const i = list.findIndex((e) => e.id === cur);
+    const next =
+      i >= 0
+        ? list[(i + dir + list.length) % list.length]
+        : dir > 0
+          ? (list.find((e) => e.id > cur) ?? list[0])
+          : ([...list].reverse().find((e) => e.id < cur) ?? list[list.length - 1]);
+    cycleLast = { kind, id: next.id };
+    setSelection([next.id]);
+    centerOn(next.x, next.y);
+    ackSelect(next);
+  }
+  /** F: camera follows the selected unit until the camera is moved by hand. */
+  function toggleFollow(): void {
+    if (!world) return;
+    if (follow != null) {
+      follow = null;
+      feed.push('鏡頭跟隨已關閉', 'info', { key: 'follow' });
+      return;
+    }
+    let target: Entity | undefined;
+    for (const id of view.selection) {
+      const e = world.entities.get(id);
+      if (e && e.kind === 'unit') {
+        target = e;
+        break;
+      }
+    }
+    if (!target) {
+      audio.playUi('error');
+      return;
+    }
+    centerOn(target.x, target.y);
+    follow = target.id;
+    audio.playUi('click');
+    feed.push(`鏡頭跟隨:${nameOf(target.defId)}`, 'info', { key: 'follow', sub: '捲動或移動鏡頭即取消' });
+  }
+  /** F1–F4 jump to a stored camera position; ⌃ / ⌘ / ⇧ + F1–F4 store it. */
+  function bookmarkKey(n: number, store: boolean): void {
+    if (store) {
+      bookmarks[n] = { x: cam.x, y: cam.y, zoom: cam.zoom };
+      audio.playUi('click');
+      feed.push(`鏡頭位置 F${n} 已儲存`, 'info', { key: 'bm' + n });
+      return;
+    }
+    const b = bookmarks[n];
+    if (!b) {
+      feed.push(`F${n} 尚未儲存鏡頭位置`, 'info', { key: 'bm' + n, sub: `按 ${isMac ? '⇧' : 'Ctrl+'}F${n} 儲存目前畫面` });
+      return;
+    }
+    cam.zoom = b.zoom;
+    centerOn(b.x, b.y);
+  }
+  function toggleToolMode(kind: 'sell' | 'repair'): void {
+    if (ended) return;
+    audio.playUi('click');
+    setMode(mode.kind === kind ? { kind: 'normal' } : { kind });
+  }
+  function healthKey(): void {
+    alwaysHealth = !alwaysHealth;
+    view.showAllHealth = alwaysHealth || mods.altKey;
+    audio.playUi('click');
+    feed.push(alwaysHealth ? '常駐顯示所有血條' : '血條恢復預設顯示', 'info', { key: 'hp' });
+  }
+  function isNativeApp(): boolean {
+    return !!(window as unknown as { cinderNative?: { isNative?: boolean } }).cinderNative?.isNative;
+  }
+
   function togglePause(): void {
+    if (lan) {
+      feed.push('區網對戰無法暫停', 'warn', { key: 'nopause', sub: '按 Esc 開啟選單' });
+      audio.playUi('error');
+      return;
+    }
     userPaused = !userPaused;
     deps.setPaused(userPaused);
     audio.playUi('click');
-    if (mode.kind === 'normal') setBanner(userPaused ? '已暫停' : '', userPaused ? '按 P 繼續' : '');
+    if (mode.kind === 'normal') setBanner(userPaused ? '已暫停' : '', userPaused ? '按 Pause 繼續' : '');
   }
   function resetInput(): void {
     held.clear();
     spaceDown = false;
     drag = null;
     view.dragRect = null;
-    view.showAllHealth = false;
+    view.showAllHealth = alwaysHealth;
+    zDown = false;
+    waypoints = [];
     edge.active = false;
     panel.hideTooltip();
   }
@@ -1046,7 +1273,9 @@ export const createGameUi: CreateGameUi = (deps) => {
     const t = e.target as HTMLElement | null;
     const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA');
     if (typing && e.code !== 'Escape') return;
-    view.showAllHealth = e.altKey && !pause.isOpen;
+    if (netHud?.blocking) return;
+    trackMods(e);
+    view.showAllHealth = alwaysHealth || (e.altKey && !pause.isOpen);
     if (e.code === 'Escape') {
       e.preventDefault();
       if (typing) t!.blur();
@@ -1059,17 +1288,41 @@ export const createGameUi: CreateGameUi = (deps) => {
       return;
     }
     if (pause.isOpen || !world) return;
-    const mod = e.metaKey || e.ctrlKey;
-    const digit = /^Digit([1-9])$/.exec(e.code);
-    if (digit) {
-      if (e.repeat) return;
-      if (e.altKey) return;
+    if (netHud && (e.code === 'Enter' || e.code === 'NumpadEnter') && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
-      groupKey(Number(digit[1]), mod, e.shiftKey);
+      resetInput();
+      netHud.openChat();
+      return;
+    }
+    const mod = e.metaKey || e.ctrlKey;
+    // control groups 1–0: ⌃/⌘+digit assign (nothing selected = clear), digit select, ⇧+digit add, twice = centre
+    const digit = /^Digit([0-9])$/.exec(e.code);
+    if (digit) {
+      if (e.repeat || e.altKey) return;
+      e.preventDefault();
+      groupKey(Number(digit[1]), mod, e.shiftKey && !mod);
+      return;
+    }
+    // camera bookmarks: F1–F4 jump, ⌃/⌘/⇧+F1–F4 store (⌃F1–F4 are taken by macOS, hence ⇧ as well)
+    const fkey = /^F([1-4])$/.exec(e.code);
+    if (fkey && !e.altKey) {
+      e.preventDefault();
+      if (!e.repeat) bookmarkKey(Number(fkey[1]), mod || e.shiftKey);
+      return;
+    }
+    if (e.code === 'F11' && !mod && !isNativeApp()) {
+      // the Mac app owns fullscreen (⌃⌘F in its menu); in a browser F11 toggles it
+      e.preventDefault();
+      if (!e.repeat) toggleFullscreen();
+      return;
+    }
+    if (e.code === 'Pause') {
+      e.preventDefault();
+      if (!e.repeat) togglePause();
       return;
     }
     if (mod) {
-      // leave every other ⌘/Ctrl combination (⌘Q, ⌘W, ⌘F, ⌘R…) to the system
+      // leave every other ⌘/Ctrl combination (⌘Q, ⌘W, ⌘H, ⌘M, ⌃⌘F…) to the system
       if (e.code === 'KeyA' && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         if (!e.repeat && !ended) selectArmy();
@@ -1096,11 +1349,19 @@ export const createGameUi: CreateGameUi = (deps) => {
         e.preventDefault();
         panel.cycleTab(e.shiftKey ? -1 : 1);
         return;
+      case 'KeyZ':
+        e.preventDefault();
+        if (!e.repeat && !zDown) {
+          zDown = true;
+          waypoints = [];
+        }
+        return;
       default:
         break;
     }
     if (e.repeat || e.altKey) return;
     switch (e.code) {
+      // orders
       case 'KeyS':
         if (!ended) runCommand('stop');
         break;
@@ -1119,14 +1380,28 @@ export const createGameUi: CreateGameUi = (deps) => {
       case 'KeyX':
         if (!ended) runCommand('scatter');
         break;
+      // selection
+      case 'KeyP':
+        if (!ended) selectArmy();
+        break;
+      case 'KeyT':
+        if (!ended) selectSameType();
+        break;
+      case 'KeyN':
+        cycleUnits(1, false);
+        break;
+      case 'KeyM':
+        cycleUnits(-1, false);
+        break;
+      case 'KeyY':
+        cycleUnits(1, true);
+        break;
+      // camera
       case 'KeyH':
         jumpToBase();
         break;
       case 'KeyF':
-        toggleFullscreen();
-        break;
-      case 'KeyP':
-        togglePause();
+        toggleFollow();
         break;
       case 'Equal':
       case 'NumpadAdd':
@@ -1136,18 +1411,42 @@ export const createGameUi: CreateGameUi = (deps) => {
       case 'NumpadSubtract':
         zoomAt(1 / 1.2, rect.width / 2, rect.height / 2);
         break;
-      default: {
-        const i = BUILD_KEYS.indexOf(e.code);
-        if (i < 0 || ended) return;
-        panel.hotkey(i, e.shiftKey);
+      // sidebar
+      case 'KeyQ':
+        panel.tabKey(['structure']);
         break;
-      }
+      case 'KeyW':
+        panel.tabKey(['defense']);
+        break;
+      case 'KeyE':
+        panel.tabKey(['infantry']);
+        break;
+      case 'KeyR':
+        panel.tabKey(['vehicle', 'aircraft']);
+        break;
+      case 'KeyK':
+        toggleToolMode('repair');
+        break;
+      case 'KeyL':
+        toggleToolMode('sell');
+        break;
+      // other
+      case 'KeyU':
+        healthKey();
+        break;
+      default:
+        return;
     }
     e.preventDefault();
   }
   function onKeyUp(e: KeyboardEvent): void {
-    view.showAllHealth = e.altKey && !pause.isOpen;
+    trackMods(e);
+    view.showAllHealth = alwaysHealth || (e.altKey && !pause.isOpen);
     held.delete(e.code);
+    if (e.code === 'KeyZ') {
+      zDown = false;
+      waypoints = [];
+    }
     if (e.code === 'Space' && spaceDown) {
       spaceDown = false;
       if (!spaceUsed && performance.now() - spaceAt < 450 && !pause.isOpen) jumpToAlert();
@@ -1159,7 +1458,7 @@ export const createGameUi: CreateGameUi = (deps) => {
 
   // ───────────────────────── per-frame ─────────────────────────
   function updateCamera(dtMs: number): void {
-    if (pause.isOpen) return;
+    if (pause.isOpen || netHud?.blocking) return;
     let vx = 0;
     let vy = 0;
     if (held.has('ArrowLeft')) vx -= 1;
@@ -1234,6 +1533,11 @@ export const createGameUi: CreateGameUi = (deps) => {
       return;
     }
     const classic = settings.scheme === 'classic';
+    const c0 = classic && !drag ? chord(mods) : null;
+    if (c0 && c0 !== 'waypoint' && analyze(w).unitIds.length) {
+      setCursor(c0 === 'forceMove' ? 'move' : c0 === 'attackMove' || (target && isEnemy(w, target.owner)) ? 'attack' : 'nogo');
+      return;
+    }
     const it = resolve(w, ptr.x, ptr.y, picked, classic);
     let c: CursorName = 'select';
     switch (it.k) {
@@ -1281,6 +1585,24 @@ export const createGameUi: CreateGameUi = (deps) => {
     }
 
     updateCamera(dtMs);
+    if (follow != null) {
+      const fe = w.entities.get(follow);
+      if (!fe) follow = null;
+      else {
+        cam.x = fe.x;
+        cam.y = fe.y;
+        clampCam();
+      }
+    }
+    // Z held: keep the waypoint markers of this run pulsing until Z is released
+    if (zDown) {
+      for (const m of waypoints) {
+        if (now - m.at > 1500) {
+          m.at = now;
+          if (!view.markers.includes(m)) view.markers.push(m);
+        }
+      }
+    }
 
     if (mode.kind === 'placement' && p) {
       const def = buildingDef(mode.defId);
@@ -1295,6 +1617,7 @@ export const createGameUi: CreateGameUi = (deps) => {
     if (p) panel.update(w, p, now, dtMs);
     selPanel.update(w, now);
     feed.update(now);
+    netHud?.update(w, now);
 
     const t = fmtTime(w.tick / TICK_RATE);
     if (t !== clockText) {
@@ -1427,6 +1750,7 @@ export const createGameUi: CreateGameUi = (deps) => {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      netHud?.destroy();
       for (const off of offs) off();
       offs.length = 0;
       hud.remove();

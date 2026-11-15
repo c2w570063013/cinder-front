@@ -6,6 +6,7 @@ import type { Difficulty, FactionId, GameMap, GameSetup, PlayerSetup, World } fr
 import { FACTIONS, GAME_TITLE, GAME_TITLE_EN } from '../data';
 import { button, el, fmtNum, fmtTime, glyph, hexToRgbTriplet, safeDpr } from './dom';
 import { createMenuBackground } from './menu/background';
+import { createLan, type Lan } from './menu/lan';
 import { drawMapPreview, renderMapBase, type PreviewLayout, type StartMark } from './menu/thumb';
 import { buildHowTo, buildSettingsPanel } from './panels';
 import { loadJson, saveJson } from './settings';
@@ -114,7 +115,7 @@ export const createMenu: CreateMenu = (deps) => {
   }
   setAccent(MENU_ACCENT);
 
-  let screen: 'title' | 'lobby' | 'howto' | 'settings' | 'result' = 'title';
+  let screen: 'title' | 'lobby' | 'howto' | 'settings' | 'result' | 'lan' | 'room' = 'title';
   let cleanup: (() => void) | null = null;
 
   function mount(name: typeof screen, node: HTMLElement, dispose?: () => void): void {
@@ -153,6 +154,22 @@ export const createMenu: CreateMenu = (deps) => {
         click();
         showLobby();
       }),
+    );
+    if (deps.net) {
+      const offline = deps.net.transport === 'none';
+      const lanBtn = button('cf-btn', '<span>區域網路對戰</span><small>LAN</small>', () => {
+        click();
+        lan?.open();
+      });
+      lanBtn.disabled = offline;
+      if (offline) {
+        lanBtn.title = '區網對戰需要使用 Mac App';
+        const wrap = el('div', 'cf-title-opt');
+        wrap.append(lanBtn, el('small', 'cf-title-why', '區網對戰需要使用 Mac App'));
+        nav.append(wrap);
+      } else nav.append(lanBtn);
+    }
+    nav.append(
       button('cf-btn', '<span>操作說明</span><small>Controls</small>', () => {
         click();
         showHowTo();
@@ -659,10 +676,28 @@ export const createMenu: CreateMenu = (deps) => {
     }
   }
 
+  // ───────────────────────── LAN ─────────────────────────
+  const lan: Lan | null = deps.net
+    ? createLan({
+        net: deps.net,
+        audio,
+        maps,
+        mount: (name, node, dispose) => mount(name, node, dispose),
+        pageHead,
+        setAccent,
+        showTitle,
+      })
+    : null;
+
   // ───────────────────────── shell ─────────────────────────
   let visible = false;
   function onKey(e: KeyboardEvent): void {
     if (!visible || e.code !== 'Escape') return;
+    if (screen === 'lan') {
+      e.preventDefault();
+      lan?.back();
+      return;
+    }
     if (screen === 'lobby' || screen === 'howto' || screen === 'settings') {
       e.preventDefault();
       click();
@@ -689,7 +724,9 @@ export const createMenu: CreateMenu = (deps) => {
   const api: MenuUi = {
     show() {
       reveal();
-      showTitle();
+      const ph = deps.net?.getState().phase;
+      if (lan && (ph === 'lobby' || ph === 'connecting')) lan.open();
+      else showTitle();
       if (unlocked) {
         try {
           audio.setMusic('menu');
@@ -703,12 +740,14 @@ export const createMenu: CreateMenu = (deps) => {
       visible = false;
       root.style.display = 'none';
       bg.stop();
+      lan?.detach();
       cleanup?.();
       cleanup = null;
       stage.replaceChildren();
     },
     showResult(world, viewer) {
       reveal();
+      lan?.detach();
       showResultScreen(world, viewer);
     },
     destroy() {

@@ -11,6 +11,8 @@ export interface UiSettings {
   /** How a plain wheel event is interpreted. auto = trackpad/Magic Mouse pans, notched wheel zooms. */
   wheelMode: WheelMode;
   panelSide: 'right' | 'left';
+  /** Mac single-button mice: ⌃-click acts as a right click (then ⌘-click is force fire). Off = ⌃-click is force fire. */
+  ctrlClickRight: boolean;
   showFps: boolean;
   gameSpeed: number;
   volume: { master: number; sfx: number; music: number; voice: number };
@@ -23,6 +25,7 @@ const DEFAULTS: UiSettings = {
   edgeScroll: 1,
   wheelMode: 'auto',
   panelSide: 'right',
+  ctrlClickRight: false,
   showFps: false,
   gameSpeed: 1,
   volume: { master: 0.8, sfx: 0.8, music: 0.5, voice: 0.8 },
@@ -39,6 +42,7 @@ function load(): UiSettings {
       if (p.wheelMode === 'auto' || p.wheelMode === 'zoom' || p.wheelMode === 'pan') s.wheelMode = p.wheelMode;
       if (p.panelSide === 'left' || p.panelSide === 'right') s.panelSide = p.panelSide;
       if (typeof p.showFps === 'boolean') s.showFps = p.showFps;
+      if (typeof p.ctrlClickRight === 'boolean') s.ctrlClickRight = p.ctrlClickRight;
       if (typeof p.gameSpeed === 'number' && p.gameSpeed >= 0.25 && p.gameSpeed <= 4) s.gameSpeed = p.gameSpeed;
       if (p.volume && typeof p.volume === 'object') {
         for (const k of ['master', 'sfx', 'music', 'voice'] as const) {

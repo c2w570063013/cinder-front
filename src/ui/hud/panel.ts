@@ -25,21 +25,20 @@ export interface Panel {
   /** Force a rebuild check of the build options on the next update. */
   invalidate(): void;
   cycleTab(dir: 1 | -1): void;
-  /** Activate the n-th cell of the current tab (build hotkeys). */
-  hotkey(index: number, shift: boolean): void;
+  /** Classic sidebar keys: switch to the first available of these categories (R toggles vehicle ⇄ aircraft). */
+  tabKey(cats: QueueCategory[]): void;
   ping(x: number, y: number, kind: 'bad' | 'warn' | 'good'): void;
   resize(): void;
   hideTooltip(): void;
 }
 
-const CATS: { id: QueueCategory; label: string; en: string }[] = [
-  { id: 'structure', label: '建築', en: 'Structures' },
-  { id: 'defense', label: '防禦', en: 'Defences' },
-  { id: 'infantry', label: '步兵', en: 'Infantry' },
-  { id: 'vehicle', label: '載具', en: 'Vehicles' },
-  { id: 'aircraft', label: '航空', en: 'Aircraft' },
+const CATS: { id: QueueCategory; label: string; en: string; key: string }[] = [
+  { id: 'structure', label: '建築', en: 'Structures', key: 'Q' },
+  { id: 'defense', label: '防禦', en: 'Defences', key: 'W' },
+  { id: 'infantry', label: '步兵', en: 'Infantry', key: 'E' },
+  { id: 'vehicle', label: '載具', en: 'Vehicles', key: 'R' },
+  { id: 'aircraft', label: '航空', en: 'Aircraft', key: 'R' },
 ];
-const HOTKEYS = ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O'];
 const ARMOR_ZH: Record<string, string> = { infantry: '步兵', light: '輕甲', heavy: '重甲', building: '建築', air: '飛行' };
 
 interface Cell {
@@ -107,12 +106,12 @@ export function createPanel(h: PanelHooks): Panel {
     audio.playUi('click');
     h.toggleMode('repair');
   });
-  repairBtn.title = '修理模式:點擊受損的己方建築  Repair';
+  repairBtn.title = '修理模式 (K):點擊受損的己方建築  Repair';
   const sellBtn = button('cf-tool', `${glyph('sell', 16)}<span>變賣</span>`, () => {
     audio.playUi('click');
     h.toggleMode('sell');
   });
-  sellBtn.title = '變賣模式:點擊己方建築換回部分資金  Sell';
+  sellBtn.title = '變賣模式 (L):點擊己方建築換回部分資金  Sell';
   const powersBox = el('div', 'cf-powers');
   tools.append(repairBtn, sellBtn, powersBox);
 
@@ -298,15 +297,13 @@ export function createPanel(h: PanelHooks): Panel {
       const foot = el('div', 'cf-cell-foot');
       foot.append(el('span', 'cf-cell-name', def.name), el('span', 'cf-cell-cost', fmtNum(def.cost)));
       b.append(icon, sweep, count, state, foot);
-      const key = HOTKEYS[i] ?? null;
-      if (key) b.append(el('span', 'cf-cell-key', key));
       const cell: Cell = { defId, cat: activeCat, cost: def.cost, root: b, sweep, count, state, lastP: -2, lastCount: -1, lastState: '', lastPoor: false };
       b.addEventListener('click', (e) => clickCell(cell, false, e.shiftKey));
       b.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         clickCell(cell, true, false);
       });
-      b.addEventListener('pointerenter', () => showTip(b, defTip(defId, key)));
+      b.addEventListener('pointerenter', () => showTip(b, defTip(defId, null)));
       b.addEventListener('pointerleave', () => {
         if (tipFor === b) hideTooltip();
       });
@@ -348,8 +345,8 @@ export function createPanel(h: PanelHooks): Panel {
     tabEls.clear();
     for (const c of CATS) {
       if (!optionsByCat.has(c.id)) continue;
-      const b = button('cf-tab', `<span>${c.label}</span><i></i>`, () => setTab(c.id, true));
-      b.title = `${c.label} ${c.en}`;
+      const b = button('cf-tab', `<span>${c.label}</span><b class="cf-tab-key">${c.key}</b><i></i>`, () => setTab(c.id, true));
+      b.title = `${c.label} ${c.en} (${c.key})`;
       tabs.append(b);
       tabEls.set(c.id, { b, last: '' });
     }
@@ -676,12 +673,15 @@ export function createPanel(h: PanelHooks): Panel {
       const n = availableCats.length;
       setTab(availableCats[(i + dir + n) % n], true);
     },
-    hotkey(index, shift) {
-      const cell = cells[index];
-      if (!cell) return;
-      clickCell(cell, false, shift);
-      cell.root.classList.add('is-poke');
-      window.setTimeout(() => cell.root.classList.remove('is-poke'), 140);
+    tabKey(cats) {
+      const avail = cats.filter((c) => availableCats.includes(c));
+      if (!avail.length) {
+        audio.playUi('error');
+        return;
+      }
+      // pressing the key of the tab that is already open moves on to its sibling (R: vehicles ⇄ aircraft)
+      const at = avail.indexOf(activeCat);
+      setTab(avail[at < 0 ? 0 : (at + 1) % avail.length], true);
     },
     ping(x, y, kind) {
       if (!lastPlayer?.hasRadar) return;

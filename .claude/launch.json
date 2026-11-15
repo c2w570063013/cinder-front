@@ -6,6 +6,7 @@
     { "name": "dev-ui", "runtimeExecutable": "npx", "runtimeArgs": ["vite", "--port", "5175", "--strictPort"], "port": 5175 },
     { "name": "dev-ai-maps", "runtimeExecutable": "npx", "runtimeArgs": ["vite", "--port", "5176", "--strictPort"], "port": 5176 },
     { "name": "dev-audio-mac", "runtimeExecutable": "npx", "runtimeArgs": ["vite", "--port", "5177", "--strictPort"], "port": 5177 },
-    { "name": "dev-sim", "runtimeExecutable": "npx", "runtimeArgs": ["vite", "--port", "5178", "--strictPort"], "port": 5178 }
+    { "name": "dev-sim", "runtimeExecutable": "npx", "runtimeArgs": ["vite", "--port", "5178", "--strictPort"], "port": 5178 },
+    { "name": "dev-net", "runtimeExecutable": "npx", "runtimeArgs": ["vite", "--port", "5179", "--strictPort"], "port": 5179 }
   ]
 }

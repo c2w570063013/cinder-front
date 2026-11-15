@@ -59,7 +59,7 @@ fi
 
 # ── 2. Swift ─────────────────────────────────────────────────────────────────
 step "Swift compile"
-SWIFT_FLAGS=(-swift-version 5 -sdk "$SDK" -framework AppKit -framework WebKit -module-name "$APP_NAME")
+SWIFT_FLAGS=(-swift-version 5 -sdk "$SDK" -framework AppKit -framework WebKit -framework Network -module-name "$APP_NAME")
 if [ "$DEBUG" = 1 ]; then SWIFT_FLAGS+=(-Onone -g -D DEBUG); else SWIFT_FLAGS+=(-O); fi
 compile() { # arch
   xcrun swiftc "${SWIFT_FLAGS[@]}" -target "$1-apple-macos$MIN_OS" mac/Sources/*.swift -o "$OBJ_DIR/$APP_NAME-$1"
@@ -116,6 +116,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSLocalNetworkUsageDescription</key><string>燼原戰線需要使用區域網路,才能搜尋並加入同一網路上其他玩家建立的對戰房間,以及讓他們加入你建立的房間。</string>
+  <key>NSBonjourServices</key><array><string>_cinderfront._tcp</string></array>
   <key>NSHumanReadableCopyright</key><string>燼原戰線 Cinder Front — an original game.</string>
 </dict>
 </plist>
@@ -123,8 +125,8 @@ PLIST
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
 # Finder / Dock name per language ("CinderFront.app" on disk).
-printf '"CFBundleDisplayName" = "燼原戰線";\n"CFBundleName" = "燼原戰線";\n' > "$APP/Contents/Resources/zh-Hant.lproj/InfoPlist.strings"
-printf '"CFBundleDisplayName" = "Cinder Front";\n"CFBundleName" = "Cinder Front";\n' > "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
+printf '"CFBundleDisplayName" = "燼原戰線";\n"CFBundleName" = "燼原戰線";\n"NSLocalNetworkUsageDescription" = "燼原戰線需要使用區域網路,才能搜尋並加入同一網路上其他玩家建立的對戰房間,以及讓他們加入你建立的房間。";\n' > "$APP/Contents/Resources/zh-Hant.lproj/InfoPlist.strings"
+printf '"CFBundleDisplayName" = "Cinder Front";\n"CFBundleName" = "Cinder Front";\n"NSLocalNetworkUsageDescription" = "Cinder Front uses the local network to find and join matches hosted by other players on the same network, and to let them join yours.";\n' > "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
 
 # ── 5. sign ──────────────────────────────────────────────────────────────────
 step "Codesign (ad-hoc)"

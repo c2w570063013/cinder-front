@@ -4,7 +4,9 @@ import type {
   Command,
   Difficulty,
   EntityId,
+  FactionId,
   GameMap,
+  GameOptions,
   GameSetup,
   MovementType,
   PlayerId,
@@ -138,6 +140,13 @@ export interface UiDeps {
   setPaused(paused: boolean): void;
   setSpeed(multiplier: number): void;
   quitToMenu(): void;
+  /**
+   * Present only in a LAN match. Then: the pause menu must NOT stop the game (main.ts ignores setPaused/setSpeed),
+   * and the HUD shows the net overlays (waiting for players, desync, host lost, defeated → spectating) and chat.
+   */
+  net?: NetMatch;
+  /** Present with `net`: subscribe to chat / notices while in the match. */
+  netApi?: NetApi;
 }
 
 export interface GameUi {
@@ -158,6 +167,12 @@ export interface MenuDeps {
   maps: MapInfo[];
   /** Start a skirmish with this setup. */
   start(setup: GameSetup): void;
+  /**
+   * LAN multiplayer. When present the title screen offers 區域網路對戰 (room browser → room lobby).
+   * The menu never starts a LAN match itself: it calls net.startMatch() and main.ts reacts to the
+   * 'matchStart' event (and hides the menu).
+   */
+  net?: NetApi;
 }
 
 export interface MenuUi {
@@ -192,3 +207,179 @@ export interface MapInfo {
   /** Deterministic for a given seed. */
   generate(seed: number): GameMap;
 }
+
+// ───────────────────────────── net  (src/net/index.ts) ─────────────────────────────
+// LAN multiplayer = deterministic lockstep: peers exchange Commands only, every peer runs the same sim.
+// Star topology: one host, clients talk only to the host. AI players are run by the host and their
+// commands travel through the same stream. A LAN match always runs at 1× and cannot be paused.
+
+/**
+ * Raw LAN bridge the macOS app injects as `window.cinderNative.net` (mac/ implements it, src/net consumes it).
+ * Bonjour discovery + TCP, messages are whole UTF-8 strings (the native side does the framing).
+ * Everything is asynchronous: results arrive as `CustomEvent<NativeNetEvent>` named 'cinder:net' on window.
+ */
+export interface NativeNetBridge {
+  /** Listen on a free TCP port and advertise it on the local network. `info` (≤ 200 bytes) is shown to browsers as-is. */
+  host(name: string, info: string): void;
+  /** Change the advertised info while hosting. */
+  updateInfo(info: string): void;
+  /** Stop advertising and listening. Existing connections stay open. */
+  stopHost(): void;
+  /** Start / stop looking for hosts. 'found' / 'lost' events follow. */
+  browse(): void;
+  stopBrowse(): void;
+  /** Connect to a host previously reported by 'found'. Answers with 'open' or 'closed'. */
+  connect(hostId: string): void;
+  send(conn: number, text: string): void;
+  close(conn: number): void;
+  /** Close every connection, stop hosting and browsing. */
+  reset(): void;
+}
+
+export type NativeNetEvent =
+  | { type: 'hosting'; port: number }
+  | { type: 'hostFailed'; message: string }
+  | { type: 'found'; id: string; name: string; info: string }
+  | { type: 'lost'; id: string }
+  /** A connection is ready. `incoming` = a client connected to our listener; otherwise our connect(hostId) succeeded. */
+  | { type: 'open'; conn: number; incoming: boolean; hostId?: string }
+  | { type: 'message'; conn: number; text: string }
+  /** Also the answer to a failed connect() (conn = -1, hostId set). */
+  | { type: 'closed'; conn: number; hostId?: string; reason: string }
+  /** Anything else, e.g. local-network permission denied. `message` is user-presentable zh-Hant. */
+  | { type: 'error'; message: string };
+
+/** A room found on the local network. */
+export interface NetRoomAd {
+  id: string;
+  name: string;
+  hostName: string;
+  mapName: string;
+  players: number;
+  maxPlayers: number;
+  /** False when the room runs a different game build; joining is refused. */
+  compatible: boolean;
+  inMatch: boolean;
+}
+
+export type NetSlot =
+  | { kind: 'open' }
+  | { kind: 'closed' }
+  | { kind: 'ai'; faction: FactionId | 'random'; color: string; team: number; difficulty: Difficulty }
+  | {
+      kind: 'human';
+      name: string;
+      faction: FactionId | 'random';
+      color: string;
+      team: number;
+      ready: boolean;
+      isHost: boolean;
+      /** This is the player on this machine. */
+      isLocal: boolean;
+      pingMs: number;
+    };
+
+/** Room lobby state, identical on every peer (except isHost / isLocal). Slot index = seat, not start position. */
+export interface NetRoom {
+  name: string;
+  isHost: boolean;
+  mapId: string;
+  seed: number;
+  startingCredits: number;
+  options: GameOptions;
+  /** One per map start (length = map.maxPlayers). Colours are unique across occupied slots. */
+  slots: NetSlot[];
+  /** Host only: every human is ready and at least two teams are present. */
+  canStart: boolean;
+}
+
+export interface NetMatchStatus {
+  /**
+   * running  – stepping normally
+   * waiting  – stalled until `waitingFor` catch up / reconnect (show an overlay with the names)
+   * desync   – world hashes differ between peers; the match cannot continue (terminal)
+   * hostLost – the host went away; the match cannot continue (terminal)
+   * ended    – leave() was called (terminal)
+   */
+  state: 'running' | 'waiting' | 'desync' | 'hostLost' | 'ended';
+  waitingFor: string[];
+  players: { player: PlayerId; name: string; controller: 'human' | 'ai'; connected: boolean; pingMs: number }[];
+}
+
+/** One running LAN match, as seen by main.ts (lockstep driver) and the HUD (status). */
+export interface NetMatch {
+  /** Identical on every peer: same map (generated from id + seed), same PlayerSetup order. */
+  readonly setup: GameSetup;
+  /** The PlayerId played on this machine. */
+  readonly localPlayer: PlayerId;
+  readonly isHost: boolean;
+  /** Queue a command issued on this machine (UI, or an AI the host runs). It executes on every peer at the same later tick. */
+  send(cmd: Command): void;
+  /**
+   * The commands every peer applies in the step taken while `world.tick === tick`, or null when they are
+   * not known yet (stall — do not step). Ask for ticks in order; after a non-null answer the caller must step.
+   */
+  takeTurn(tick: number): Command[] | null;
+  /** How many consecutive turns starting at `tick` are already available — > 2 means this peer is behind and should catch up. */
+  ready(tick: number): number;
+  /** Call after every step with the new `world.tick`. `hash` is invoked only on the ticks the protocol checks. */
+  afterStep(tick: number, hash: () => number): void;
+  readonly status: NetMatchStatus;
+  /** Leave the match. A human who leaves surrenders (the host injects the command for them). */
+  leave(): void;
+}
+
+export interface NetState {
+  phase: 'idle' | 'browsing' | 'connecting' | 'lobby' | 'match';
+  /** Rooms currently visible on the network (maintained while browsing). */
+  rooms: NetRoomAd[];
+  room: NetRoom | null;
+  match: NetMatchStatus | null;
+}
+
+export type NetEvent =
+  /** The host started the game. main.ts builds the world from `match.setup` and drives it through `match`. */
+  | { type: 'matchStart'; match: NetMatch }
+  | { type: 'chat'; from: string; color: string; text: string }
+  /** Informational, zh-Hant: "某某 加入了房間", "某某 已離線"… */
+  | { type: 'notice'; text: string }
+  /** Something failed and the user should be told (connect failed, kicked, version mismatch, room closed…). zh-Hant. */
+  | { type: 'error'; text: string };
+
+export interface NetApi {
+  /** 'none' = no way to reach other machines here (plain browser); the UI disables LAN play and says why. */
+  readonly transport: 'native' | 'loopback' | 'none';
+  /** Immutable snapshot — a new object after every change. */
+  getState(): NetState;
+  subscribe(cb: (state: NetState) => void): () => void;
+  on(cb: (event: NetEvent) => void): () => void;
+
+  browse(): void;
+  stopBrowse(): void;
+  /** Create a room and enter its lobby as host. */
+  host(playerName: string, roomName: string): void;
+  join(roomId: string, playerName: string): void;
+  /** Leave the room or the match and go back to 'idle'. Safe to call in any phase. */
+  leave(): void;
+
+  // Room lobby. Host-only calls are ignored on clients.
+  setRoom(patch: Partial<Pick<NetRoom, 'mapId' | 'seed' | 'startingCredits' | 'options'>>): void;
+  /** Host: open / close a seat or put an AI in it. Kicks a human sitting there. */
+  setSlot(index: number, slot: Exclude<NetSlot, { kind: 'human' }>): void;
+  /** Change my own seat's settings. */
+  setMe(patch: { faction?: FactionId | 'random'; color?: string; team?: number; ready?: boolean }): void;
+  chat(text: string): void;
+  /** Host: start when `room.canStart`. */
+  startMatch(): void;
+
+  readonly match: NetMatch | null;
+  destroy(): void;
+}
+
+export interface NetDeps {
+  maps: MapInfo[];
+  /** Identifies the game build; peers with a different value cannot play together. */
+  buildId: string;
+}
+
+export type CreateNet = (deps: NetDeps) => NetApi;

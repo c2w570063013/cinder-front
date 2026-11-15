@@ -12,6 +12,8 @@ export interface PauseMenu {
   back(): void;
   /** Open straight on the controls reference. */
   openHelp(): void;
+  /** Open on the "leave the match?" confirmation. */
+  openQuit(): void;
 }
 
 export function createPauseMenu(deps: UiDeps, hooks: { onOpen(): void; onClose(): void; surrender(): void; canSurrender(): boolean }): PauseMenu {
@@ -21,6 +23,8 @@ export function createPauseMenu(deps: UiDeps, hooks: { onOpen(): void; onClose()
   const card = el('div', 'cf-card cf-glass');
   root.append(card);
   let open = false;
+  /** LAN match: the menu does not pause the game, there is no speed control, and leaving = surrendering. */
+  const lan = !!deps.net;
   let page: 'main' | 'settings' | 'howto' | 'confirm' = 'main';
   const click = () => deps.audio.playUi('click');
 
@@ -59,15 +63,27 @@ export function createPauseMenu(deps: UiDeps, hooks: { onOpen(): void; onClose()
     card.append(rowEl);
   }
 
+  function quitConfirm(): void {
+    const quit = () => {
+      open = false;
+      root.style.display = 'none';
+      deps.quitToMenu();
+    };
+    if (!lan) confirmPage('離開戰鬥?', '目前的戰鬥進度不會保存。', '返回主選單', quit);
+    else if (hooks.canSurrender()) confirmPage('離開對戰?', '在區網對戰中離開即視同投降:你的部隊將放下武器,其他玩家會繼續作戰。', '離開並投降', quit);
+    else confirmPage('離開對戰?', '你已退出戰局,離開不會影響其他玩家。', '離開對戰', quit);
+  }
+
   function show(p: 'main' | 'settings' | 'howto'): void {
     page = p;
     card.replaceChildren();
     card.className = 'cf-card cf-glass' + (p === 'howto' ? ' is-wide' : p === 'settings' ? ' is-mid' : '');
     if (p === 'main') {
-      card.append(header('戰術暫停', 'Paused', false));
+      card.append(lan ? header('選單', 'Menu', false) : header('戰術暫停', 'Paused', false));
+      if (lan) card.append(el('p', 'cf-card-text cf-dim', '區網對戰無法暫停,戰鬥仍在進行中。'));
       const list = el('div', 'cf-menu-list');
       list.append(
-        button('cf-btn is-primary', '<span>繼續作戰</span><small>Resume</small>', () => {
+        button('cf-btn is-primary', lan ? '<span>返回戰場</span><small>Back</small>' : '<span>繼續作戰</span><small>Resume</small>', () => {
           click();
           api.close();
         }),
@@ -90,20 +106,16 @@ export function createPauseMenu(deps: UiDeps, hooks: { onOpen(): void; onClose()
       sur.disabled = !hooks.canSurrender();
       list.append(
         sur,
-        button('cf-btn', '<span>返回主選單</span><small>Quit to menu</small>', () => {
+        button('cf-btn', lan ? '<span>離開對戰</span><small>Leave = surrender</small>' : '<span>返回主選單</span><small>Quit to menu</small>', () => {
           click();
-          confirmPage('離開戰鬥?', '目前的戰鬥進度不會保存。', '返回主選單', () => {
-            open = false;
-            root.style.display = 'none';
-            deps.quitToMenu();
-          });
+          quitConfirm();
         }),
       );
       card.append(list);
     } else if (p === 'settings') {
       card.append(header('設定', 'Settings', true));
       const scroll = el('div', 'cf-card-scroll');
-      scroll.append(buildSettingsPanel(deps.audio, { setSpeed: deps.setSpeed }));
+      scroll.append(buildSettingsPanel(deps.audio, lan ? undefined : { setSpeed: deps.setSpeed }));
       card.append(scroll);
     } else {
       card.append(header('操作說明', 'Controls', true));
@@ -134,6 +146,10 @@ export function createPauseMenu(deps: UiDeps, hooks: { onOpen(): void; onClose()
     openHelp() {
       api.open();
       show('howto');
+    },
+    openQuit() {
+      api.open();
+      quitConfirm();
     },
     back() {
       if (page === 'main') api.close();

@@ -15,6 +15,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
   private var bridgeMessages = 0
   private var selfTestStarted = false
   private var contentRulesActive = false
+  private let net = NetBridge()
+  private var netPending: [[String: Any]] = []
+  private var netFlushScheduled = false
+  private var netEventsDelivered = 0
+  private var coverWindow: NSWindow?
+  private var throttlingOff = false
 
   private let args = CommandLine.arguments
   private lazy var selfTest = args.contains("--selftest")
@@ -42,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     buildMenu()
     buildWindow()
     NSApp.activate(ignoringOtherApps: true)
+    net.log = { [weak self] in self?.log($0) }
+    net.emit = { [weak self] in self?.queueNetEvent($0) }
+    net.onActivityChange = { [weak self] in self?.updateActivity() }
 
     // Block every remote subresource: the game is fully local.
     // (WebKit's rule regex has no alternation, hence one rule per scheme.)
@@ -140,6 +149,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
       if (window.cinderNative) return;
       const post = (m) => { try { window.webkit.messageHandlers.cinder.postMessage(m); } catch (_) {} };
       const state = { fullscreen: false };
+      const str = (v) => (v == null ? '' : String(v));
+      const num = (v) => { const n = Math.trunc(Number(v)); return Number.isFinite(n) ? n : -1; };
+      const netOp = (m) => post(Object.assign({ type: 'net' }, m));
       const errors = (window.__cinderErrors = []);
       window.cinderNative = Object.freeze({
         isNative: true,
@@ -151,7 +163,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         setFullscreen(on) { post({ type: 'setFullscreen', on: !!on }); },
         quit() { post({ type: 'quit' }); },
         log(...a) { post({ type: 'log', text: a.map(String).join(' ') }); },
+        // LAN transport (NativeNetBridge in src/core/api.ts); results arrive as 'cinder:net' events.
+        net: Object.freeze({
+          host(name, info) { netOp({ op: 'host', name: str(name), info: str(info) }); },
+          updateInfo(info) { netOp({ op: 'updateInfo', info: str(info) }); },
+          stopHost() { netOp({ op: 'stopHost' }); },
+          browse() { netOp({ op: 'browse' }); },
+          stopBrowse() { netOp({ op: 'stopBrowse' }); },
+          connect(hostId) { netOp({ op: 'connect', hostId: str(hostId) }); },
+          send(conn, text) { netOp({ op: 'send', conn: num(conn), text: str(text) }); },
+          close(conn) { netOp({ op: 'close', conn: num(conn) }); },
+          reset() { netOp({ op: 'reset' }); },
+        }),
       });
+      // native → page: batches of NativeNetEvents, dispatched in order
+      window.__cinderNetDeliver = (list) => {
+        for (const detail of list) window.dispatchEvent(new CustomEvent('cinder:net', { detail }));
+      };
       // native → page: fullscreen changes arrive as a 'cinder:fullscreen' CustomEvent
       window.__cinderNativeState = (s) => {
         Object.assign(state, s);
@@ -203,6 +231,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
           let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
     bridgeMessages += 1
     switch type {
+    case "net":
+      net.handle(body)
+    case "testWindow" where selfTest:
+      testWindow(body["action"] as? String ?? "")
     case "toggleFullscreen":
       window.toggleFullScreen(nil)
     case "setFullscreen":
@@ -237,15 +269,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
   func windowDidMiniaturize(_ notification: Notification) { updateActivity() }
   func windowDidDeminiaturize(_ notification: Notification) { updateActivity() }
 
-  /// While the game is on screen, opt out of App Nap / timer coalescing so it holds 60 fps.
+  /// While the game is on screen — or a LAN room / connection is open, because the host is the clock for
+  /// every peer — opt out of App Nap / timer coalescing, and keep WebKit from treating the page as hidden.
   private func updateActivity() {
+    guard window != nil else { return }
     let visible = window.occlusionState.contains(.visible) && !window.isMiniaturized
-    if visible, activity == nil {
-      activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical], reason: "Game is running")
-    } else if !visible, let a = activity {
+    let networked = net.isActive
+    let wanted = visible || networked
+    if wanted, activity == nil {
+      activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical], reason: networked ? "LAN match in progress" : "Game is running")
+    } else if !wanted, let a = activity {
       ProcessInfo.processInfo.endActivity(a)
       activity = nil
     }
+    setBackgroundThrottling(enabled: !networked)
+  }
+
+  /// WebKit throttles a page it considers hidden: rAF stops, timers drop to ~1 Hz, the web content process
+  /// may be App-Napped. During a LAN session none of that is acceptable. (Private but long-standing WebKit
+  /// SPI, reached through KVC and guarded so a missing selector is simply skipped.)
+  private func setBackgroundThrottling(enabled: Bool) {
+    guard throttlingOff == enabled else { return } // already in the requested state
+    throttlingOff = !enabled
+    // Occlusion detection off ⇒ a covered window still counts as visible (rAF keeps running).
+    setPrivate(webView, "windowOcclusionDetectionEnabled", enabled)
+    let prefs = webView.configuration.preferences
+    setPrivate(prefs, "hiddenPageDOMTimerThrottlingEnabled", enabled)
+    setPrivate(prefs, "hiddenPageDOMTimerThrottlingAutoIncreases", enabled)
+    setPrivate(prefs, "pageVisibilityBasedProcessSuppressionEnabled", enabled)
+    if selfTest { log("background throttling \(enabled ? "on" : "off")") }
+  }
+
+  private func setPrivate(_ object: NSObject, _ key: String, _ value: Bool) {
+    let setter = "_set" + key.prefix(1).uppercased() + key.dropFirst() + ":"
+    guard object.responds(to: NSSelectorFromString(setter)) else { return log("note: \(type(of: object)) has no \(setter)") }
+    object.setValue(value, forKey: key)
+  }
+
+  // MARK: - LAN events → page
+
+  private func queueNetEvent(_ event: [String: Any]) {
+    netPending.append(event)
+    guard !netFlushScheduled else { return }
+    netFlushScheduled = true
+    DispatchQueue.main.async { [weak self] in self?.flushNetEvents() } // one script per run-loop turn
+  }
+
+  private func flushNetEvents() {
+    netFlushScheduled = false
+    guard !netPending.isEmpty else { return }
+    let batch = netPending
+    netPending.removeAll()
+    // JSON is a JS expression, so the texts reach the page byte-exact without any manual escaping.
+    guard let data = try? JSONSerialization.data(withJSONObject: batch), let json = String(data: data, encoding: .utf8) else {
+      return log("net: could not encode \(batch.count) events")
+    }
+    netEventsDelivered += batch.count
+    webView.evaluateJavaScript("window.__cinderNetDeliver && window.__cinderNetDeliver(\(json)); 0", completionHandler: nil)
+  }
+
+  /// The page that owned the sockets is going away: close them all without telling anyone.
+  private func dropNetForNavigation() {
+    if net.isActive || net.isBrowsing { log("net: page is navigating — closing \(net.openConnections) connection(s), hosting=\(net.isHosting)") }
+    net.reset(silent: true)
+    netPending.removeAll()
   }
 
   // MARK: - Navigation: local only
@@ -268,10 +355,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     return nil
   }
 
+  func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { dropNetForNavigation() }
+
   func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { log("navigation failed: \(error.localizedDescription)") }
   func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { log("load failed: \(error.localizedDescription)") }
   func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
     log("web content process terminated — reloading")
+    dropNetForNavigation()
     webView.load(URLRequest(url: SchemeHandler.indexURL))
   }
 
@@ -376,6 +466,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
   @objc private func zoomOut(_ sender: Any?) { setPageZoom(webView.pageZoom - 0.1) }
   @objc private func reloadPage(_ sender: Any?) { webView.load(URLRequest(url: SchemeHandler.indexURL)) }
 
+  /// Self-test only: puts the window in the states a player's window can be in, so a test script can
+  /// measure what keeps ticking (`cinderNative` has no such call outside `--selftest`).
+  private func testWindow(_ action: String) {
+    log("testWindow \(action)")
+    switch action {
+    case "cover":
+      guard coverWindow == nil else { return }
+      let w = NSWindow(contentRect: window.frame.insetBy(dx: -40, dy: -40), styleMask: [.borderless], backing: .buffered, defer: false)
+      w.isOpaque = true
+      w.backgroundColor = .black
+      w.level = .floating
+      w.isReleasedWhenClosed = false
+      w.orderFrontRegardless()
+      coverWindow = w
+    case "uncover":
+      coverWindow?.orderOut(nil)
+      coverWindow = nil
+    case "miniaturize": window.miniaturize(nil)
+    case "deminiaturize": window.deminiaturize(nil)
+    case "hide": NSApp.hide(nil)
+    case "unhide": NSApp.unhide(nil)
+    case "reload": webView.load(URLRequest(url: SchemeHandler.indexURL))
+    default: break
+    }
+  }
+
   /// The page may handle `cinder:help` (and call preventDefault); otherwise show a native summary.
   @objc private func showHelp(_ sender: Any?) {
     let js = "window.dispatchEvent(new CustomEvent('cinder:help', { cancelable: true }))"
@@ -445,7 +561,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
       switch result {
       case .success(let value):
         var json = value as? String ?? "{}"
-        let extra = ",\"bridgeMessages\":\(self.bridgeMessages),\"windowTitle\":\"\(self.window.title)\",\"frame\":\"\(NSStringFromRect(self.window.frame))\",\"firstResponderIsWebView\":\(self.window.firstResponder === self.webView || (self.window.firstResponder as? NSView)?.isDescendant(of: self.webView) == true),\"backingScale\":\(self.window.backingScaleFactor),\"appNapOptOut\":\(self.activity != nil),\"debug\":\(self.debugMode)}"
+        let extra = ",\"bridgeMessages\":\(self.bridgeMessages),\"windowTitle\":\"\(self.window.title)\",\"frame\":\"\(NSStringFromRect(self.window.frame))\",\"firstResponderIsWebView\":\(self.window.firstResponder === self.webView || (self.window.firstResponder as? NSView)?.isDescendant(of: self.webView) == true),\"backingScale\":\(self.window.backingScaleFactor),\"appNapOptOut\":\(self.activity != nil),\"netEventsDelivered\":\(self.netEventsDelivered),\"netInstance\":\"\(self.net.instance)\",\"debug\":\(self.debugMode)}"
         if json.hasSuffix("}") { json = String(json.dropLast()) + extra }
         self.snapshotThenFinish(json: json)
       case .failure(let error):

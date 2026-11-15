@@ -2,11 +2,14 @@
 // Uses the real sim / render / maps / audio / ai modules when they exist and load, otherwise the stand-ins in ./dev/.
 //   ?fake=all | sim,render,maps,audio,ai   force stand-ins          ?autostart=1   skip the menu
 //   ?prebuilt=1   (fake sim only) start with a full base            ?credits=N
-import type { AiController, AudioApi, CreateAi, CreateAudio, CreateRenderer, GameUi, MapInfo, Renderer, SimApi } from '../core/api';
+//   ?fake=net  scripted LAN stand-in (default when src/net is missing)   ?net=none  LAN shown as unavailable
+//   ?lan=host | join   jump straight into a fake LAN lobby
+import type { AiController, AudioApi, CreateAi, CreateAudio, CreateNet, CreateRenderer, GameUi, MapInfo, NetApi, NetMatch, Renderer, SimApi } from '../core/api';
 import { TICK_MS } from '../core/constants';
 import type { Command, GameSetup, SimEvent, World } from '../core/types';
 import { FACTIONS } from '../data';
 import { audioLog, createFakeAudio, FAKE_MAPS } from './dev/fakeMisc';
+import { createFakeNet, type FakeNet } from './dev/fakeNet';
 import { createFakeRenderer } from './dev/fakeRenderer';
 import { fakeSim, fakeSpawn } from './dev/fakeSim';
 import { createGameUi, createMenu } from './index';
@@ -23,6 +26,7 @@ const loaders: Record<string, Loader> = {
   maps: import.meta.glob('../maps/index.ts'),
   audio: import.meta.glob('../audio/index.ts'),
   ai: import.meta.glob('../ai/index.ts'),
+  net: import.meta.glob('../net/index.ts'),
 };
 const status: Record<string, string> = {};
 
@@ -72,6 +76,7 @@ interface Session {
   last: number;
   over: boolean;
   viewer: number;
+  match: NetMatch | null;
 }
 
 async function boot(): Promise<void> {
@@ -81,6 +86,22 @@ async function boot(): Promise<void> {
   const createAudio = await load<CreateAudio>('audio', (m) => m.createAudio as CreateAudio | undefined, createFakeAudio);
   const createAi = await load<CreateAi | null>('ai', (m) => m.createAi as CreateAi | undefined, null);
   const simIsFake = sim === fakeSim;
+  const netMode = params.get('net');
+  const createNet = netMode === 'none' ? null : await load<CreateNet | null>('net', (m) => m.createNet as CreateNet | undefined, null);
+  let net: NetApi;
+  let fakeNet: FakeNet | null = null;
+  if (createNet) {
+    try {
+      net = createNet({ maps, buildId: 'ui-dev' });
+    } catch (err) {
+      console.warn('[ui dev] net init failed, using stand-in', err);
+      status.net = 'fake (init failed)';
+      net = fakeNet = createFakeNet({ maps });
+    }
+  } else {
+    if (netMode === 'none') status.net = 'fake (transport none)';
+    net = fakeNet = createFakeNet({ maps, transport: netMode === 'none' ? 'none' : 'loopback' });
+  }
 
   let audio: AudioApi;
   try {
@@ -131,7 +152,7 @@ async function boot(): Promise<void> {
     if (simIsFake && params.get('prebuilt')) prebuild(world, viewer);
     const renderer = createRenderer(canvas);
     const cmds: Command[] = [];
-    const s: Session = { world, renderer, ui: null as unknown as GameUi, ais: [], cmds, paused: false, speed: 1, acc: 0, last: performance.now(), over: false, viewer };
+    const s: Session = { world, renderer, ui: null as unknown as GameUi, ais: [], cmds, paused: false, speed: 1, acc: 0, last: performance.now(), over: false, viewer, match: null };
     session = s;
     fit();
     for (const e of world.entities.values()) {
@@ -200,7 +221,69 @@ async function boot(): Promise<void> {
     world.events = [];
   }
 
-  const menu = createMenu({ root: app, audio, maps, start });
+  /** LAN match: same as start(), but the world comes from match.setup and every tick goes through the match. */
+  function startNet(match: NetMatch): void {
+    if (session) end(true);
+    menu.hide();
+    const setup = match.setup;
+    const world = sim.createWorld(setup);
+    const viewer = match.localPlayer;
+    const renderer = createRenderer(canvas);
+    const s: Session = { world, renderer, ui: null as unknown as GameUi, ais: [], cmds: [], paused: false, speed: 1, acc: 0, last: performance.now(), over: false, viewer, match };
+    session = s;
+    fit();
+    for (const e of world.entities.values()) {
+      if (e.owner === viewer) {
+        renderer.camera.x = e.x;
+        renderer.camera.y = e.y;
+        break;
+      }
+    }
+    renderer.clampCamera(world);
+    const quit = () => {
+      try {
+        match.leave();
+        net.leave();
+      } catch {
+        /* ignore */
+      }
+      end(true);
+    };
+    s.ui = createGameUi({
+      root: app,
+      canvas,
+      renderer,
+      sim,
+      audio,
+      viewer,
+      send: (c) => match.send(c),
+      setPaused: () => undefined,
+      setSpeed: () => undefined,
+      quitToMenu: quit,
+      net: match,
+      netApi: net,
+    });
+    if (createAi && !simIsFake && match.isHost) {
+      setup.players.forEach((p, id) => {
+        if (p.controller !== 'ai') return;
+        try {
+          s.ais.push(createAi(id, p.difficulty, (setup.seed + id * 7919) | 0, sim));
+        } catch (err) {
+          console.warn('[ui dev] AI init failed', err);
+        }
+      });
+    }
+    try {
+      audio.setMusic('calm');
+    } catch {
+      /* ignore */
+    }
+  }
+  net.on((e) => {
+    if (e.type === 'matchStart') startNet(e.match);
+  });
+
+  const menu = createMenu({ root: app, audio, maps, start, net });
 
   function frame(now: number): void {
     requestAnimationFrame(frame);
@@ -208,7 +291,51 @@ async function boot(): Promise<void> {
     if (!s) return;
     const dt = Math.min(250, now - s.last);
     s.last = now;
-    if (!s.paused && !s.over) {
+    if (s.match && !s.over) {
+      // lockstep: step only when the turn for this tick is known; catch up when behind
+      s.acc += dt;
+      let guard = 0;
+      while ((s.acc >= TICK_MS || s.match.ready(s.world.tick) > 2) && guard++ < 8) {
+        for (const ai of s.ais) {
+          try {
+            for (const c of ai.think(s.world)) s.match.send(c);
+          } catch (err) {
+            console.warn('[ui dev] AI think failed', err);
+          }
+        }
+        const turn = s.match.takeTurn(s.world.tick);
+        if (!turn) {
+          s.acc = Math.min(s.acc, TICK_MS);
+          break;
+        }
+        s.acc = Math.max(0, s.acc - TICK_MS);
+        sim.step(s.world, turn);
+        const w = s.world;
+        s.match.afterStep(w.tick, () => sim.hashWorld(w));
+        const events = w.events;
+        s.renderer.handleEvents(events, w);
+        s.ui.handleEvents(events, w);
+        try {
+          audio.handleEvents(events, w, s.viewer, s.renderer.camera);
+        } catch {
+          /* ignore */
+        }
+        if (events.some((e) => e.type === 'gameOver')) {
+          s.over = true;
+          window.setTimeout(() => {
+            if (session === s) {
+              try {
+                s.match?.leave();
+                net.leave();
+              } catch {
+                /* ignore */
+              }
+              end(false);
+            }
+          }, 1600);
+        }
+      }
+    } else if (!s.paused && !s.over) {
       s.acc += dt * s.speed;
       let guard = 0;
       while (s.acc >= TICK_MS && guard++ < 8) {
@@ -251,6 +378,13 @@ async function boot(): Promise<void> {
     },
     status,
     audioLog,
+    net,
+    fakeNet: fakeNet?.dev ?? null,
+    /** Mark the local player defeated (fake sim) to see the spectating banner. */
+    defeatMe() {
+      const p = session?.world.players[session.viewer];
+      if (p) p.defeated = true;
+    },
     settings,
     updateSettings,
     emit(ev: SimEvent | SimEvent[]) {
@@ -263,7 +397,17 @@ async function boot(): Promise<void> {
     },
   };
 
-  if (params.get('autostart')) {
+  if (fakeNet) mountNetDevBar(fakeNet, () => session);
+  const lanJump = params.get('lan');
+  if (lanJump === 'host' || lanJump === 'join') {
+    menu.show();
+    if (lanJump === 'host') net.host('開發者', '開發測試房');
+    else {
+      net.browse();
+      window.setTimeout(() => net.join(net.getState().rooms[0]?.id ?? 'r-fri', '開發者'), 50);
+    }
+    window.setTimeout(() => menu.show(), 1200);
+  } else if (params.get('autostart')) {
     const info = maps[Number(params.get('map') ?? 0)] ?? maps[0];
     const seed = Number(params.get('seed') ?? 7);
     const faction = params.get('faction') === 'ferrum' ? 'ferrum' : 'helion';
@@ -281,3 +425,40 @@ async function boot(): Promise<void> {
 }
 
 void boot().catch((err) => showError('boot failed: ' + String(err?.stack ?? err)));
+
+/** Small strip of buttons for flipping the fake LAN through every state by hand. */
+function mountNetDevBar(fake: FakeNet, current: () => Session | null): void {
+  const bar = document.createElement('div');
+  bar.id = 'dev-net';
+  bar.style.cssText =
+    'position:fixed;right:8px;bottom:18px;z-index:1000;display:flex;gap:4px;flex-wrap:wrap;max-width:60vw;justify-content:flex-end;opacity:.55;font:10px ui-monospace,Menlo,monospace';
+  bar.addEventListener('mouseenter', () => (bar.style.opacity = '1'));
+  bar.addEventListener('mouseleave', () => (bar.style.opacity = '.55'));
+  const add = (label: string, fn: () => void) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText = 'font:inherit;padding:2px 6px;border-radius:4px;border:1px solid #555;background:#1b2027;color:#cfd4d9;cursor:pointer';
+    b.addEventListener('click', fn);
+    bar.append(b);
+  };
+  add('net:running', () => fake.dev.setStatus('running'));
+  add('waiting', () => fake.dev.setStatus('waiting'));
+  add('desync', () => fake.dev.setStatus('desync'));
+  add('hostLost', () => fake.dev.setStatus('hostLost'));
+  add('disconnect', () => {
+    const m = fake.match;
+    const other = m?.setup.players.findIndex((p, i) => p.controller === 'human' && i !== m.localPlayer) ?? -1;
+    if (other >= 0) fake.dev.setDisconnected(other, true);
+  });
+  add('defeat me', () => {
+    const s = current();
+    const p = s?.world.players[s.viewer];
+    if (p) p.defeated = true;
+  });
+  add('chat', () => fake.dev.chatFrom('阿岩', '左邊那條路有敵軍!'));
+  add('notice', () => fake.dev.notice('小霧 的連線不穩定'));
+  add('error', () => fake.dev.error('與房主的連線逾時'));
+  add('kicked', () => fake.dev.kicked());
+  add('host closed', () => fake.dev.hostClosed());
+  document.body.append(bar);
+}
