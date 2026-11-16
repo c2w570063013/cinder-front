@@ -41,7 +41,7 @@ export class Fx {
 
   private sprites: HTMLCanvasElement[] = [];
   private G_WHITE: number; private G_YELLOW: number; private G_ORANGE: number; private G_RED: number; private G_CYAN: number; private G_MAGENTA: number; private G_GOLD: number;
-  private P_DARK: number; private P_GREY: number; private P_DUST: number; private P_LIGHT: number;
+  private P_DARK: number; private P_GREY: number; private P_DUST: number; private P_LIGHT: number; private P_STEAM: number;
   private scorch: HTMLCanvasElement;
 
   private beams: Beam[] = [];
@@ -59,7 +59,7 @@ export class Fx {
     const p = (c: string): number => this.sprites.push(bank.puff(c)) - 1;
     this.G_WHITE = g('#fff2d8'); this.G_YELLOW = g('#ffd060'); this.G_ORANGE = g('#ff8a2a'); this.G_RED = g('#e2401c');
     this.G_CYAN = g('#62e6ff'); this.G_MAGENTA = g('#f070d0'); this.G_GOLD = g('#ffd84a');
-    this.P_DARK = p('#26221f'); this.P_GREY = p('#6e6a66'); this.P_DUST = p('#a8946e'); this.P_LIGHT = p('#cfc8bc');
+    this.P_DARK = p('#26221f'); this.P_GREY = p('#6e6a66'); this.P_DUST = p('#a8946e'); this.P_LIGHT = p('#cfc8bc'); this.P_STEAM = p('#eef2f4');
     this.scorch = makeCanvas(64, 64);
     const sc = this.scorch.getContext('2d')!;
     for (let i = 0; i < 9; i++) {
@@ -97,6 +97,15 @@ export class Fx {
 
   smoke(x: number, y: number, z: number, dark: boolean, size = 1): void {
     this.add(K_PUFF, dark ? this.P_DARK : this.P_GREY, x + rs(0.05), y + rs(0.05), z, rs(0.12) + 0.18, rs(0.12) - 0.12, 0.55 + rnd() * 0.3, 1.6 + rnd() * 1.2, 9 * size, 34 * size, 0.6, -0.08, 0.5);
+  }
+  /** White steam / vapour: rises faster and fades sooner than smoke. */
+  steam(x: number, y: number, z: number, size = 1): void {
+    this.add(K_PUFF, this.P_STEAM, x + rs(0.08), y + rs(0.08), z, rs(0.1) + 0.14, rs(0.1) - 0.09, 0.7 + rnd() * 0.35, 1.5 + rnd() * 1.0, 11 * size, 44 * size, 0.5, -0.05, 0.45);
+  }
+  /** A few glowing embers / electrical sparks thrown from a point. */
+  embers(x: number, y: number, z: number, col: string, n: number): void {
+    const gi = this.glowIdx(col);
+    for (let i = 0; i < n; i++) this.add(K_GLOW, gi, x + rs(0.06), y + rs(0.06), z, rs(0.9), rs(0.9), 0.6 + rnd() * 1.4, 0.3 + rnd() * 0.4, 5, 1.5, 1, 4.5, 0.3);
   }
   flame(x: number, y: number, z: number, size = 1): void {
     this.add(K_GLOW, rnd() < 0.5 ? this.G_ORANGE : this.G_YELLOW, x + rs(0.08), y + rs(0.08), z, rs(0.1), rs(0.1), 0.5 + rnd() * 0.5, 0.3 + rnd() * 0.3, 16 * size, 5 * size, 0.85, 0, 0.5);

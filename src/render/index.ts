@@ -61,6 +61,8 @@ export const createRenderer: CreateRenderer = (canvas: HTMLCanvasElement): Rende
   const states = new Map<EntityId, RS>();
   const ghosts = new Map<EntityId, Ghost>();
   const unloadAt = new Map<EntityId, number>();
+  /** Building id → time (s) its exit door was last triggered by a unit rolling out. */
+  const doorAt = new Map<EntityId, number>();
 
   // draw list
   const keys = new Float64Array(MAXI);
@@ -100,9 +102,16 @@ export const createRenderer: CreateRenderer = (canvas: HTMLCanvasElement): Rende
 
   // live-overlay context handed to building art
   let liveX = 0, liveY = 0;
+  let liveE: Entity | null = null;
   const live: LiveCtx = {
-    ctx, t: 0, on: true, P: palOf('#888888'), charge: 0, active: 0, seed: 0,
+    ctx, t: 0, on: true, P: palOf('#888888'), charge: 0, active: 0, seed: 0, door: 0,
     glow: (x, y, z, r, col, a) => pushGlow(liveX + (x - y) * HW, liveY + (x + y) * HH - z * ZPX, r, col, a),
+    chance: (rate) => dt > 0 && Math.random() < dt * rate,
+    puff: (x, y, z, kind, size) => {
+      if (!liveE) return;
+      if (kind === 1) fx.steam(liveE.x + x, liveE.y + y, z, size); else fx.smoke(liveE.x + x, liveE.y + y, z, kind === 2, size);
+    },
+    spark: (x, y, z, col, n) => { if (liveE) fx.embers(liveE.x + x, liveE.y + y, z, col, n); },
   };
 
   const playerOf = (world: World, id: PlayerId): Player | undefined => {
@@ -316,28 +325,95 @@ export const createRenderer: CreateRenderer = (canvas: HTMLCanvasElement): Rende
     ctx.clip();
   };
 
+  /** Footprint diamond lifted `zpx` iso px above the ground (path only). */
+  const footDiamond = (X: number, Y: number, w: number, h: number, zpx: number, grow = 0): void => {
+    const hw = w / 2 + grow, hh = h / 2 + grow;
+    ctx.beginPath();
+    ctx.moveTo(X + (-hw + hh) * HW, Y + (-hw - hh) * HH - zpx);
+    ctx.lineTo(X + (hw + hh) * HW, Y + (hw - hh) * HH - zpx);
+    ctx.lineTo(X + (hw - hh) * HW, Y + (hw + hh) * HH - zpx);
+    ctx.lineTo(X + (-hw - hh) * HW, Y + (-hw + hh) * HH - zpx);
+    ctx.closePath();
+  };
+
+  /** A building under construction: it is assembled layer by layer inside a scaffold. */
   const drawBuildingWhole = (world: World, e: Entity, X: number, Y: number): void => {
     const s = stateOf(e);
     const bs = s.bs!;
     const sp = bs.body;
-    if (e.buildProgress < 1) {
-      const p = e.buildProgress;
-      // faint blueprint of the finished structure, then the body rising out of the foundation
-      ctx.globalAlpha = 0.13 + 0.05 * Math.sin(now * 5 + s.seed);
+    if (e.buildProgress >= 1) {
       ctx.drawImage(sp.c, X - sp.ox, Y - sp.oy, sp.w, sp.h);
-      ctx.globalAlpha = 1;
-      ctx.save();
-      footClip(X, Y, bs.w, bs.h);
-      const rise = (1 - p) * (bs.height * ZPX + 10);
-      ctx.drawImage(sp.c, X - sp.ox, Y - sp.oy + rise, sp.w, sp.h);
-      ctx.restore();
-      if (dt > 0 && Math.random() < dt * 10) {
-        fx.sparkle(e.x + (Math.random() - 0.5) * bs.w, e.y + (Math.random() - 0.5) * bs.h, p * bs.height * 0.8, s.bdef?.faction === 'ferrum' ? '#ffa640' : '#74f4ff', 1, 0.1);
-      }
-      if (dt > 0 && Math.random() < dt * 3) fx.dust(e.x + (Math.random() - 0.5) * bs.w, e.y + bs.h / 2, 0.8);
-    } else {
-      ctx.drawImage(sp.c, X - sp.ox, Y - sp.oy, sp.w, sp.h);
+      return;
     }
+    const p = Math.max(0, e.buildProgress);
+    const ferrum = bs.ferrum;
+    const w = bs.w, h = bs.h;
+    const topPx = bs.height * ZPX;
+    // everything below the work plane is finished; the work plane is a footprint diamond rising with progress
+    const zCut = p * (topPx + 6);
+    // screen-space cut: finished part = sprite rows below the far (top) edge of the lifted diamond's centre line
+    const yCut = Y - zCut;
+    const top = Y - sp.oy, bottom = top + sp.h;
+    const rail = ferrum ? 'rgba(46,40,36,0.9)' : 'rgba(150,240,255,0.55)';
+    const scaffold = (front: boolean): void => {
+      // corner poles + decks every 0.5 tile up to just above the work plane
+      const zTop = Math.min(topPx + 10, zCut + 12);
+      const cs = front ? [[-w / 2, h / 2], [w / 2, h / 2], [w / 2, -h / 2]] : [[-w / 2, -h / 2]];
+      ctx.strokeStyle = rail; ctx.lineWidth = ferrum ? 1.6 : 1.1;
+      ctx.beginPath();
+      for (const [cx, cy] of cs) {
+        const px = X + (cx - cy) * HW, py = Y + (cx + cy) * HH;
+        ctx.moveTo(px, py); ctx.lineTo(px, py - zTop);
+      }
+      ctx.stroke();
+      if (front) {
+        ctx.strokeStyle = ferrum ? 'rgba(233,191,61,0.75)' : 'rgba(150,240,255,0.32)'; ctx.lineWidth = 1;
+        for (let z = 18; z < zTop; z += 18) {
+          // the two front edges of the deck at this level
+          ctx.beginPath();
+          ctx.moveTo(X + (-w / 2 - h / 2) * HW, Y + (-w / 2 + h / 2) * HH - z);
+          ctx.lineTo(X + (w / 2 - h / 2) * HW, Y + (w / 2 + h / 2) * HH - z);
+          ctx.lineTo(X + (w / 2 + h / 2) * HW, Y + (w / 2 - h / 2) * HH - z);
+          ctx.stroke();
+        }
+      }
+    };
+    // foundation outline + back scaffold
+    footDiamond(X, Y, w, h, 0);
+    ctx.fillStyle = ferrum ? 'rgba(40,34,30,0.55)' : 'rgba(40,60,80,0.45)'; ctx.fill();
+    scaffold(false);
+    // ghost of the finished structure above the work plane
+    const cutRow = Math.max(0, Math.min(sp.h, yCut - top));
+    if (cutRow > 0) {
+      ctx.globalAlpha = (ferrum ? 0.1 : 0.16) + 0.04 * Math.sin(now * 5 + s.seed);
+      ctx.drawImage(sp.c, 0, 0, sp.c.width, cutRow * sp.s, X - sp.ox, top, sp.w, cutRow);
+      ctx.globalAlpha = 1;
+    }
+    // finished part
+    if (cutRow < sp.h) ctx.drawImage(sp.c, 0, cutRow * sp.s, sp.c.width, (sp.h - cutRow) * sp.s, X - sp.ox, top + cutRow, sp.w, bottom - (top + cutRow));
+    // work plane
+    footDiamond(X, Y, w, h, zCut, 0.04);
+    if (ferrum) {
+      ctx.strokeStyle = 'rgba(233,191,61,0.85)'; ctx.lineWidth = 1.6; ctx.stroke();
+    } else {
+      ctx.fillStyle = `rgba(116,244,255,${0.07 + 0.04 * Math.sin(now * 6 + s.seed)})`; ctx.fill();
+      ctx.strokeStyle = 'rgba(170,250,255,0.9)'; ctx.lineWidth = 1.4; ctx.stroke();
+    }
+    scaffold(true);
+    // welders / fabricator heads crawling along the work plane
+    const col = ferrum ? '#ffd76a' : '#74f4ff';
+    for (let i = 0; i < 3; i++) {
+      const u = (now * (0.22 + i * 0.07) + s.seed + i * 0.37) % 1;
+      // walk the diamond's two front edges
+      const k = u * 2;
+      const lx = k < 1 ? -w / 2 + k * w : w / 2, ly = k < 1 ? h / 2 : h / 2 - (k - 1) * h;
+      const px = X + (lx - ly) * HW, py = Y + (lx + ly) * HH - zCut;
+      const fl = ferrum ? (Math.sin(now * 37 + i * 5 + s.seed) > 0.1 ? 1 : 0.15) : 0.8;
+      pushGlow(px, py, ferrum ? 11 : 9, col, fl);
+      if (dt > 0 && ferrum && fl > 0.5 && Math.random() < dt * 9) fx.embers(e.x + lx, e.y + ly, zCut / ZPX, col, 1);
+    }
+    if (!ferrum) pushGlow(X, Y - zCut, (w + h) * HW * 0.42, col, 0.12);
+    if (dt > 0 && Math.random() < dt * 3) fx.dust(e.x + (Math.random() - 0.5) * w, e.y + h / 2, 0.8);
   };
 
   const drawStrip = (e: Entity, X: number, Y: number, j: number): void => {
@@ -379,7 +455,14 @@ export const createRenderer: CreateRenderer = (canvas: HTMLCanvasElement): Rende
     if (art.live) {
       const owner = playerOf(world, e.owner);
       live.t = now; live.on = e.powered; live.P = bs.pal; live.seed = s.seed;
-      live.charge = 0; live.active = 0;
+      live.charge = 0; live.active = 0; live.door = 0;
+      liveE = e;
+      const d = doorAt.get(e.id);
+      if (d !== undefined) {
+        const a = now - d;
+        if (a > 3.4 || a < 0) doorAt.delete(e.id);
+        else live.door = a < 0.45 ? a / 0.45 : a < 2.5 ? 1 : 1 - (a - 2.5) / 0.9;
+      }
       if (def?.supportPower && owner) {
         for (const p of owner.powers) if (p.sourceId === e.id || (p.id === def.supportPower && owner.powers.length === 1)) { live.charge = p.ready ? 1 : p.chargeMax > 0 ? p.charge / p.chargeMax : 0; break; }
       }
@@ -410,18 +493,36 @@ export const createRenderer: CreateRenderer = (canvas: HTMLCanvasElement): Rende
     }
     if (dt > 0) {
       if (art.smoke && e.powered) {
-        for (const p of art.smoke) if (Math.random() < dt * 3.2) fx.smoke(e.x + p[0], e.y + p[1], p[2], false, 0.8);
-      }
-      const hf = e.hp / e.maxHp;
-      if (hf < 0.5) {
-        const rate = hf < 0.25 ? 7 : 3;
-        if (Math.random() < dt * rate) {
-          const ox = (Math.sin(s.seed * 7 + ((now * 0.7) | 0)) * 0.35) * bs.w, oy = (Math.cos(s.seed * 5 + ((now * 0.5) | 0)) * 0.35) * bs.h;
-          fx.smoke(e.x + ox, e.y + oy, bs.height * 0.55, true, 1);
-          if (hf < 0.25 || Math.random() < 0.3) fx.flame(e.x + ox, e.y + oy, bs.height * 0.5, hf < 0.25 ? 1.3 : 0.9);
+        for (const p of art.smoke) {
+          if (Math.random() >= dt * 4.5) continue;
+          const kind = p[3] ?? 0, size = p[4] ?? 0.8;
+          if (kind === 1) fx.steam(e.x + p[0], e.y + p[1], p[2], size); else fx.smoke(e.x + p[0], e.y + p[1], p[2], kind === 2, size);
         }
       }
     }
+    // battle damage: fixed fires on the wounds, black smoke, sparks from torn wiring
+    const hf = e.hp / e.maxHp;
+    if (hf < 0.5) {
+      const heavy = hf < 0.25;
+      const hot = bs.hot;
+      const fires = Math.min(hot.length, heavy ? 3 : 1);
+      for (let i = 0; i < fires; i++) {
+        const p = hot[i];
+        const fl = 0.7 + 0.3 * Math.sin(now * 11 + i * 2.1 + s.seed) * Math.sin(now * 5.3 + i);
+        pushGlow(X + (p[0] - p[1]) * HW, Y + (p[0] + p[1]) * HH - p[2] * ZPX, heavy ? 22 : 15, '#ff8a2a', (heavy ? 0.75 : 0.5) * fl);
+        if (dt > 0) {
+          if (Math.random() < dt * (heavy ? 9 : 4)) fx.flame(e.x + p[0], e.y + p[1], p[2], heavy ? 1.2 : 0.8);
+          if (Math.random() < dt * (heavy ? 5 : 2.5)) fx.smoke(e.x + p[0], e.y + p[1], p[2] + 0.15, true, heavy ? 1.2 : 0.9);
+        }
+      }
+      if (dt > 0 && hot.length > 1 && Math.random() < dt * (heavy ? 3 : 1.2)) {
+        const p = hot[1 + ((Math.random() * (hot.length - 1)) | 0)];
+        const col = bs.ferrum ? '#ffd060' : '#bff6ff';
+        fx.embers(e.x + p[0], e.y + p[1], p[2], col, 3);
+        fx.glowPulse(e.x + p[0], e.y + p[1], p[2], col, 16, 0.12);
+      }
+    }
+    liveE = null;
   };
 
   const drawGhost = (g: Ghost, X: number, Y: number): void => {
@@ -775,7 +876,7 @@ export const createRenderer: CreateRenderer = (canvas: HTMLCanvasElement): Rende
     tickF = world.tick + alphaF;
     if (world !== lastWorld || terrain.map !== world.map) {
       lastWorld = world;
-      states.clear(); ghosts.clear(); unloadAt.clear(); fx.clear();
+      states.clear(); ghosts.clear(); unloadAt.clear(); doorAt.clear(); fx.clear();
       terrain.setMap(world.map);
       const n = world.map.width * world.map.height;
       propStamp = new Uint32Array(n);
@@ -1016,6 +1117,22 @@ export const createRenderer: CreateRenderer = (canvas: HTMLCanvasElement): Rende
           fx.fire(ev.kind, WEAPONS[ev.weaponId]?.color ?? '#ffd98a', sx, sy, sz, ev.tx, ev.ty, ev.tz, flash);
           break;
         }
+        case 'entityCreated': {
+          // a unit rolled out: open the door of the building it came from
+          const ud = UNITS[ev.defId];
+          if (!ud) break;
+          let best: Entity | null = null, bd = 1e9;
+          for (const e of world.entities.values()) {
+            if (e.kind !== 'building' || e.owner !== ev.owner || e.buildProgress < 1) continue;
+            const bdf = BUILDINGS[e.defId];
+            if (!bdf?.produces || !bdf.produces.includes(ud.category as never)) continue;
+            const dx = ev.x - e.x, dy = ev.y - (e.y + bdf.footprint.h / 2 + 0.5);
+            const d = dx * dx + dy * dy;
+            if (d < bd) { bd = d; best = e; }
+          }
+          if (best && bd < 30) doorAt.set(best.id, fx.now);
+          break;
+        }
         case 'impact':
           if (tileVisible(ev.x, ev.y)) fx.impact(ev.kind, WEAPONS[ev.weaponId]?.color ?? '#ffd98a', ev.x, ev.y, ev.z, ev.splash);
           break;
@@ -1024,6 +1141,7 @@ export const createRenderer: CreateRenderer = (canvas: HTMLCanvasElement): Rende
         case 'entityDestroyed': {
           states.delete(ev.id);
           unloadAt.delete(ev.id);
+          doorAt.delete(ev.id);
           if (!tileVisible(ev.x, ev.y)) break;
           if (ev.kind === 'building') {
             const def = BUILDINGS[ev.defId];

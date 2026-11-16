@@ -1127,6 +1127,48 @@ export const createGameUi: CreateGameUi = (deps) => {
       centerOn(x / g.length, y / g.length);
     }
   }
+  /** Numpad 5: centre the camera on the current selection. */
+  function centerSelection(): void {
+    if (!world) return;
+    let x = 0;
+    let y = 0;
+    let n = 0;
+    for (const id of view.selection) {
+      const e = world.entities.get(id);
+      if (!e) continue;
+      x += e.x;
+      y += e.y;
+      n++;
+    }
+    if (n) centerOn(x / n, y / n);
+  }
+  /** Ctrl+C: Mac app → native snapshot of the whole window (HUD included) into ~/Pictures; browser → PNG download of the battlefield. */
+  function screenshot(): void {
+    const native = (window as unknown as { cinderNative?: { screenshot?: () => void } }).cinderNative;
+    if (native?.screenshot) {
+      native.screenshot();
+      return;
+    }
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const d = new Date();
+      const p = (v: number) => String(v).padStart(2, '0');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `cinder-front-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.png`;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      audio.playUi('click');
+      feed.push('已儲存截圖', 'info', { key: 'shot' });
+    }, 'image/png');
+  }
+  on(window, 'cinder:screenshot', (e: Event) => {
+    const d = (e as CustomEvent<{ ok?: boolean; path?: string; error?: string }>).detail ?? {};
+    if (d.ok) {
+      audio.playUi('click');
+      feed.push(`已儲存截圖:${d.path ?? ''}`, 'info', { key: 'shot' });
+    } else feed.push(`截圖失敗${d.error ? ':' + d.error : ''}`, 'warn', { key: 'shot' });
+  });
   function selectArmy(): void {
     if (!world) return;
     const w = world;
@@ -1322,11 +1364,21 @@ export const createGameUi: CreateGameUi = (deps) => {
       return;
     }
     if (mod) {
-      // leave every other ⌘/Ctrl combination (⌘Q, ⌘W, ⌘H, ⌘M, ⌃⌘F…) to the system
+      // leave every other ⌘/Ctrl combination (⌘Q, ⌘W, ⌘H, ⌘M, ⌘C, ⌃⌘F…) to the system
       if (e.code === 'KeyA' && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         if (!e.repeat && !ended) selectArmy();
+      } else if (e.code === 'KeyC' && e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+        // classic Ctrl+C screen capture (⌘C stays copy)
+        e.preventDefault();
+        if (!e.repeat) screenshot();
       }
+      return;
+    }
+    if (e.code === 'Numpad5' || e.code === 'Numpad8' || e.code === 'Numpad2') {
+      e.preventDefault();
+      if (e.code === 'Numpad5') centerSelection();
+      else panel.scrollGrid(e.code === 'Numpad8' ? -1 : 1);
       return;
     }
     switch (e.code) {

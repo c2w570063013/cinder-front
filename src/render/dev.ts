@@ -11,10 +11,13 @@ import type {
 } from '../core/types';
 import { BUILDINGS, FACTIONS, SUPPORT_POWERS, UNITS, WARHEADS, WEAPONS, getDef } from '../data';
 import { createRenderer } from './index';
+import { BUILDING_ART, type LiveCtx } from './art-buildings';
+import { HH as ISO_HH, HW as ISO_HW, ZPX as ISO_Z } from './model';
+import { SpriteBank, palOf } from './sprites';
 
 // ───────────────────────────── params / utils ─────────────────────────────
 
-type SceneName = 'gallery' | 'heavy' | 'sim';
+type SceneName = 'gallery' | 'heavy' | 'sim' | 'showcase' | 'match';
 const Q = new URLSearchParams(location.search);
 const qNum = (k: string, d: number) => {
   const v = Q.get(k);
@@ -60,6 +63,7 @@ const state = {
   power: '' as SupportPowerId | '',
   icons: false,
   iconsAlt: false,
+  silhouettes: false,
 };
 const stats = { fps: 0, renderAvg: 0, renderMax: 0, entities: 0, projectiles: 0, backing: '', dpr: 1, tick: 0, frames: 0, fx: '' };
 
@@ -897,6 +901,323 @@ function buildHeavy() {
   for (let i = 0; i < 150; i++) { heavyUnit('helion', false); heavyUnit('ferrum', false); }
 }
 
+// ───────────────────────────── scene: showcase (every building × state, screen-aligned rows) ─────────────────────────────
+
+function makeFlatMap(size: number): GameMap {
+  const n = size * size;
+  const r = makeRng(SEED ^ 0x51a7);
+  const terrain = new Uint8Array(n), ore = new Uint8Array(n), variant = new Uint8Array(n);
+  for (let i = 0; i < n; i++) variant[i] = r.int(0, 255);
+  return { id: 'render_showcase', name: 'Showcase', width: size, height: size, terrain, ore, variant, starts: [{ x: 10, y: 10 }, { x: size - 10, y: size - 10 }, { x: size - 10, y: 10 }, { x: 10, y: size - 10 }] };
+}
+
+const SHOW_ROWS: [string, (e: Entity, k: number) => void][] = [
+  ['normal', () => {}],
+  ['damaged 45%', (e) => { e.hp = Math.round(e.maxHp * 0.45); }],
+  ['damaged 18%', (e) => { e.hp = Math.round(e.maxHp * 0.18); }],
+  ['under construction', (e, k) => { e.buildProgress = 0.5; e.action = 'construct'; showLoopers.push([e, k]); }],
+];
+let showLoopers: [Entity, number][] = [];
+/** Screen-space centre + size (css px at zoom 1) of each faction block, for whole-block captures. */
+const showBlocks: Record<string, { x: number; y: number; w: number; h: number }> = {};
+
+function buildShowcase() {
+  showLoopers = [];
+  const RV = 8;
+  (['helion', 'ferrum'] as FactionId[]).forEach((f, fi) => {
+    const ids = Object.values(BUILDINGS).filter((b) => b.faction === f).map((b) => b.id);
+    const ox = 4 + fi * SHOW_ROWS.length * RV, oy = 56 + fi * SHOW_ROWS.length * RV;
+    let uMax = 0;
+    SHOW_ROWS.forEach(([name, tweak], r) => {
+      let u = 0;
+      label(ox + r * RV - 2.2, oy + r * RV + 2.2, `${FACTIONS[f].name} · ${name}`, true);
+      ids.forEach((id, k) => {
+        const d = BUILDINGS[id];
+        const span = (d.footprint.w + d.footprint.h) / 2;
+        const step = span >= 3 ? 4.5 : span >= 2.5 ? 4 : span >= 2 ? 3.5 : 2;
+        u += step / 2;
+        const e = spawnAt(id, ownerOf(f), ox + r * RV + u, oy + r * RV - u);
+        if (d.turret) { e.turretFacing = 0.6 + k; }
+        tweak(e, k);
+        if (r === 0) makeAgent(e, 'static');
+        label(e.x + d.footprint.w / 2, e.y + d.footprint.h / 2, r === 0 ? `${id} ${d.name}` : id);
+        u += step / 2;
+      });
+      uMax = Math.max(uMax, u);
+    });
+    const cu = uMax / 2, cv = ((SHOW_ROWS.length - 1) * RV) / 2;
+    const cx = ox + cv + cu, cy = oy + cv - cu;
+    spots[f] = { x: cx, y: cy - 1.5 };
+    showBlocks[f] = { x: cx, y: cy - 1.5, w: uMax * 64 + 260, h: SHOW_ROWS.length * RV * 32 + 110 };
+  });
+  tweens.push(() => {
+    for (const [e, k] of showLoopers) {
+      e.buildProgress = Math.min(1, ((world.tick + k * 29) % 240) / 180);
+      if (showFreeze >= 0) e.buildProgress = showFreeze;
+      e.action = e.buildProgress < 1 ? 'construct' : 'idle';
+    }
+    return true;
+  });
+  // some life around the first row: door / refinery events fire from the generator
+  later(10, function pulse() {
+    if (state.scene !== 'showcase') return;
+    for (const e of world.entities.values()) {
+      if (e.kind !== 'building' || e.buildProgress < 1 || e.hp < e.maxHp) continue;
+      const d = BUILDINGS[e.defId];
+      if (d.refinery && world.tick % 160 < 20) {
+        const hv = spawn(d.freeUnit ?? 'h_harvester', e.owner, e.x + 0.9, e.y + 0.6);
+        ev({ type: 'harvesterUnloaded', id: hv.id, owner: e.owner, credits: 500 });
+        later(1, () => removeEntity(hv));
+      }
+      if (d.produces && !d.conyard && world.tick % 200 < 20) {
+        const cat = d.produces[0];
+        const u = Object.values(UNITS).find((x) => x.faction === d.faction && x.category === cat);
+        if (u) {
+          const unit = spawn(u.id, e.owner, e.x - 0.2, e.y + d.footprint.h / 2 + 0.6, { facing: Math.PI / 2, turretFacing: Math.PI / 2 });
+          ev({ type: 'entityCreated', id: unit.id, defId: u.id, owner: e.owner, x: unit.x, y: unit.y });
+          ev({ type: 'unitReady', id: unit.id, defId: u.id, owner: e.owner });
+          later(70, () => removeEntity(unit));
+        }
+      }
+    }
+    later(20, pulse);
+  });
+}
+/** ≥ 0 pins every "under construction" building at that progress (for stable screenshots). */
+let showFreeze = -1;
+
+// ───────────────────────────── scene: match (real sim + 4 AIs, for perf / in-game shots) ─────────────────────────────
+
+const aiLoaders = import.meta.glob('../ai/index.ts');
+interface AiLike { player: PlayerId; think(w: World): unknown[] }
+let matchAis: AiLike[] = [];
+let matchStep: ((w: World, c: never[]) => void) | null = null;
+
+async function startMatch(mapId = 'cross_mesa') {
+  const sm = (await Object.values(simLoaders)[0]()) as Partial<SimApi> & { sim?: Partial<SimApi> };
+  const mm = (await Object.values(mapLoaders)[0]()) as { MAPS?: MapInfo[] };
+  const am = (await Object.values(aiLoaders)[0]()) as { createAi?: (p: PlayerId, d: string, seed: number, sim: unknown) => AiLike };
+  const api = (sm.sim ?? sm) as SimApi;
+  const info = mm.MAPS?.find((m) => m.id === mapId) ?? mm.MAPS?.find((m) => m.maxPlayers >= 4);
+  if (!api.createWorld || !info || !am.createAi) throw new Error('match scene: sim / maps / ai not available');
+  const map = info.generate(SEED);
+  const setup: GameSetup = {
+    map, seed: SEED, startingCredits: 10000, options: { fog: true, shortGame: false, superweapons: true },
+    players: PLAYER_DEFS.map(([name, faction, color, team], i) => ({ name, faction, color, team, controller: 'ai', difficulty: 'hard', startIndex: i })),
+  };
+  const w = api.createWorld(setup);
+  resetFake();
+  world = w;
+  matchAis = setup.players.map((p, id) => am.createAi!(id, p.difficulty, (SEED + id * 7919) | 0, api));
+  matchStep = api.step.bind(api) as never;
+  state.scene = 'match';
+  state.fog = false;
+  view.viewer = 0;
+  spots = Object.fromEntries(map.starts.slice(0, 4).map((s, i) => [`start${i}`, s]));
+  afterSceneChange('start0');
+}
+function matchTick(present: boolean) {
+  const cmds: unknown[] = [];
+  for (const ai of matchAis) if (!world.players[ai.player].defeated) for (const c of ai.think(world)) cmds.push(c);
+  matchStep?.(world, cmds as never[]);
+  if (present) safe('handleEvents', () => R.handleEvents(world.events, world));
+}
+/** Fast-forward the match scene without rendering. */
+async function ff(ticks: number): Promise<number> {
+  const was = state.paused;
+  state.paused = true;
+  for (let done = 0; done < ticks && world.winnerTeam === null; ) {
+    const t0 = performance.now();
+    while (done < ticks && performance.now() - t0 < 40 && world.winnerTeam === null) { matchTick(ticks - done < 60); done++; }
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  state.paused = was;
+  return world.tick;
+}
+/** Restart the match scene and fast-forward to `tick`; returns the mean building position per owner. */
+async function matchAt(tick: number): Promise<Record<number, { x: number; y: number; n: number }>> {
+  state.paused = true;
+  await startMatch();
+  await ff(tick - world.tick);
+  state.fog = false;
+  const cen: Record<number, { x: number; y: number; n: number }> = {};
+  for (const e of world.entities.values()) if (e.kind === 'building') { const c = cen[e.owner] ?? (cen[e.owner] = { x: 0, y: 0, n: 0 }); c.x += e.x; c.y += e.y; c.n++; }
+  for (const k in cen) { cen[k].x /= cen[k].n; cen[k].y /= cen[k].n; }
+  return cen;
+}
+/** Fog is a view choice in the match scene: the sim always runs with fog on. */
+function renderWorld(r: Renderer, alpha: number) {
+  if (state.scene !== 'match') { r.render(world, view, alpha); return; }
+  world.setup.options.fog = state.fog;
+  try { r.render(world, view, alpha); } finally { world.setup.options.fog = true; }
+}
+
+// ───────────────────────────── captures / perf ─────────────────────────────
+
+const SHOT_URL = 'http://127.0.0.1:5199/save';
+function postCanvas(c: HTMLCanvasElement, name: string): Promise<string> {
+  return new Promise((res, rej) => c.toBlob((b) => {
+    if (!b) { rej(new Error('toBlob failed')); return; }
+    fetch(`${SHOT_URL}?name=${encodeURIComponent(name)}`, { method: 'POST', body: b }).then((r) => r.text()).then(res, rej);
+  }, 'image/png'));
+}
+/** Save the live game canvas as it is right now. */
+function shot(name: string): Promise<string> {
+  view.time = Math.max(view.time, performance.now());
+  renderWorld(R, 0.5);
+  return postCanvas(canvas, name);
+}
+/** Render a region of the current world with a throw-away renderer into a w×h css-px PNG. */
+async function capture(name: string, x: number, y: number, w: number, h: number, zoom = 1, ratio = 1, warm = 150): Promise<string> {
+  const c = document.createElement('canvas');
+  const r2 = createRenderer(c);
+  r2.resize(w, h, ratio);
+  r2.camera.x = x; r2.camera.y = y; r2.camera.zoom = zoom;
+  // warm up so smoke, steam and fires have had time to build
+  let t = Math.max(view.time, performance.now());
+  for (let i = 0; i < warm; i++) { t += 1000 / 60; view.time = t; renderWorld(r2, 0.5); }
+  const out = await postCanvas(c, name);
+  r2.destroy();
+  return out;
+}
+function captureBlock(name: string, faction: FactionId, zoom = 1, ratio = 1): Promise<string> {
+  const b = showBlocks[faction];
+  return capture(name, b.x, b.y, Math.round(b.w * zoom), Math.round(b.h * zoom), zoom, ratio);
+}
+function portraitSheet(size = 160, alt = false): HTMLCanvasElement {
+  const d = 2, COLS = 9, PAD = 10, CH = size + 34, HEAD = 30;
+  const groups = (['helion', 'ferrum'] as FactionId[]).map((f) => ({
+    f, color: PLAYER_DEFS[ownerOf(f) + (alt ? 2 : 0)][2],
+    defs: [...Object.values(BUILDINGS), ...Object.values(UNITS)].filter((v: EntityDef) => v.faction === f) as EntityDef[],
+  }));
+  const wCss = COLS * (size + PAD) + PAD, hCss = groups.reduce((s, g) => s + HEAD + Math.ceil(g.defs.length / COLS) * CH, 0) + PAD;
+  const sheet = document.createElement('canvas');
+  sheet.width = wCss * d; sheet.height = hCss * d;
+  const c = sheet.getContext('2d')!;
+  c.setTransform(d, 0, 0, d, 0, 0);
+  c.fillStyle = '#0e1115'; c.fillRect(0, 0, wCss, hCss);
+  c.textBaseline = 'top';
+  let y = 0;
+  for (const g of groups) {
+    c.textAlign = 'left'; c.font = '600 15px -apple-system, "PingFang TC", sans-serif'; c.fillStyle = g.color;
+    c.fillText(`${FACTIONS[g.f].name} ${FACTIONS[g.f].nameEn}`, PAD, y + 8);
+    y += HEAD;
+    g.defs.forEach((def, i) => {
+      const x = PAD + (i % COLS) * (size + PAD), yy = y + Math.floor(i / COLS) * CH;
+      const icon = safe('getIcon', () => R.getIcon(def.id, g.color, size * d));
+      if (icon) c.drawImage(icon, x, yy, size, size);
+      c.textAlign = 'center';
+      c.font = '12px -apple-system, "PingFang TC", sans-serif'; c.fillStyle = '#e8e6e1';
+      c.fillText(`${def.name} ${def.id}`, x + size / 2, yy + size + 4, size);
+    });
+    y += Math.ceil(g.defs.length / COLS) * CH;
+  }
+  return sheet;
+}
+// ───────────────────────────── silhouette check ─────────────────────────────
+
+let silBank: SpriteBank | null = null;
+/**
+ * One building exactly as it is drawn in game (body + turret + animated overlay: dish, crane, flags…) flattened to a
+ * solid black shape. `k` = css px per iso px (1 = default zoom). Returns the canvas and its ground anchor.
+ */
+function silhouetteOf(defId: string, k: number, d: number): { c: HTMLCanvasElement; ax: number; ay: number; w: number; h: number } {
+  const bank = silBank ?? (silBank = new SpriteBank());
+  const def = BUILDINGS[defId];
+  const bs = bank.building(defId, '#3fa7ff', 0, def.wall ? 2 | 8 : 0);
+  const sp = bs.body;
+  const up = Math.max(sp.oy, bs.height * ISO_Z + 70), side = Math.max(sp.ox, sp.w - sp.ox) + 30, down = sp.h - sp.oy + 6;
+  const w = side * 2, h = up + down;
+  const c = document.createElement('canvas');
+  c.width = Math.ceil(w * k * d); c.height = Math.ceil(h * k * d);
+  const ctx = c.getContext('2d')!;
+  ctx.setTransform(k * d, 0, 0, k * d, side * k * d, up * k * d);
+  ctx.drawImage(sp.c, -sp.ox, -sp.oy, sp.w, sp.h);
+  const art = bs.art;
+  if (art.turret && art.pivot) {
+    const ts = bank.turret(bs, 4);
+    ctx.drawImage(ts.c, (art.pivot[0] - art.pivot[1]) * ISO_HW - ts.ox, (art.pivot[0] + art.pivot[1]) * ISO_HH - art.pivot[2] * ISO_Z - ts.oy, ts.w, ts.h);
+  }
+  if (art.live) {
+    const g: LiveCtx = { ctx, t: 1.3, on: true, P: palOf('#3fa7ff'), charge: 0.5, active: 0, seed: 0.7, door: 0, glow: () => {}, chance: () => false, puff: () => {}, spark: () => {} };
+    art.live(g);
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.setLineDash([]);
+  }
+  // hard threshold → solid black, no soft glow fringe
+  const img = ctx.getImageData(0, 0, c.width, c.height);
+  const px = img.data;
+  for (let i = 0; i < px.length; i += 4) { const a = px[i + 3] > 110 ? 255 : 0; px[i] = 12; px[i + 1] = 12; px[i + 2] = 14; px[i + 3] = a; }
+  ctx.putImageData(img, 0, 0);
+  return { c, ax: side, ay: up, w, h };
+}
+/** Every building of both factions as flat black shapes: one row per faction at default zoom, plus a half-zoom row. */
+function silhouetteSheet(): HTMLCanvasElement {
+  const d = 2, PAD = 16, LABEL = 34, HEAD = 30;
+  const rows: { title: string; k: number; items: { id: string; name: string; fw: number; s: ReturnType<typeof silhouetteOf> }[] }[] = [];
+  for (const f of ['helion', 'ferrum'] as FactionId[]) {
+    const defs = Object.values(BUILDINGS).filter((b) => b.faction === f);
+    for (const k of [1, 0.5]) rows.push({ title: `${FACTIONS[f].name} ${FACTIONS[f].nameEn} — ${k === 1 ? 'default zoom ×1' : 'zoomed out ×0.5'}`, k, items: defs.map((b) => ({ id: b.id, name: b.name, fw: (b.footprint.w + b.footprint.h) * ISO_HW, s: silhouetteOf(b.id, k, d) })) });
+  }
+  const rowW = (r: (typeof rows)[number]) => r.items.reduce((s, it) => s + Math.max(it.fw * r.k + 26, 76) + 8, 0);
+  const rowUp = (r: (typeof rows)[number]) => Math.max(...r.items.map((it) => it.s.ay * r.k)) - 40 * r.k;
+  const W = Math.ceil(Math.max(...rows.map(rowW))) + PAD * 2;
+  const Hh = rows.reduce((s, r) => s + HEAD + rowUp(r) + 40 * r.k + LABEL, 0) + PAD;
+  const sheet = document.createElement('canvas');
+  sheet.width = W * d; sheet.height = Math.ceil(Hh) * d;
+  const c = sheet.getContext('2d')!;
+  c.setTransform(d, 0, 0, d, 0, 0);
+  c.fillStyle = '#dcd8cf'; c.fillRect(0, 0, W, Hh);
+  let y = 0;
+  for (const r of rows) {
+    c.fillStyle = '#3a3630'; c.font = '600 13px -apple-system, "PingFang TC", sans-serif'; c.textAlign = 'left'; c.textBaseline = 'top';
+    c.fillText(r.title, PAD, y + 9);
+    y += HEAD;
+    const ground = y + rowUp(r);
+    c.strokeStyle = 'rgba(0,0,0,0.12)'; c.lineWidth = 1; c.beginPath(); c.moveTo(PAD, ground + 0.5); c.lineTo(W - PAD, ground + 0.5); c.stroke();
+    let x = PAD;
+    for (const it of r.items) {
+      const cw = Math.max(it.fw * r.k + 26, 76) + 8;
+      const cx = x + cw / 2;
+      c.drawImage(it.s.c, cx - it.s.ax * r.k, ground - it.s.ay * r.k, it.s.w * r.k, it.s.h * r.k);
+      c.fillStyle = '#3a3630'; c.textAlign = 'center';
+      c.font = '11px -apple-system, "PingFang TC", sans-serif'; c.fillText(it.name, cx, ground + 40 * r.k + 4, cw);
+      c.font = '9px ui-monospace, Menlo, monospace'; c.fillStyle = '#7a746a'; c.fillText(it.id, cx, ground + 40 * r.k + 19, cw);
+      x += cw;
+    }
+    y = ground + 40 * r.k + LABEL;
+  }
+  return sheet;
+}
+
+/** Advance the world + renderer by `sec` seconds of simulated time without waiting for animation frames (works in a hidden tab). */
+function run(sec: number): void {
+  let t = Math.max(view.time, performance.now());
+  const n = Math.round(sec * 60);
+  for (let i = 0; i < n; i++) {
+    if (i % 3 === 0 && !state.paused) tick();
+    t += 1000 / 60;
+    view.time = t;
+    renderWorld(R, (i % 3) / 3);
+  }
+}
+/** Time `n` synchronous renders of the current view. */
+function perf(n = 240): { avg: number; med: number; p95: number; max: number; entities: number; buildings: number } {
+  const ms: number[] = [];
+  const t = performance.now();
+  for (let i = 0; i < 20; i++) { view.time = t + i * 16.7; renderWorld(R, 0.5); }
+  for (let i = 0; i < n; i++) {
+    view.time = t + (20 + i) * 16.7;
+    const t0 = performance.now();
+    renderWorld(R, (i % 3) / 3);
+    ms.push(performance.now() - t0);
+  }
+  ms.sort((a, b) => a - b);
+  let nb = 0;
+  for (const e of world.entities.values()) if (e.kind === 'building') nb++;
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  return { avg: r2(ms.reduce((s, v) => s + v, 0) / n), med: r2(ms[n >> 1]), p95: r2(ms[Math.floor(n * 0.95)]), max: r2(ms[n - 1]), entities: world.entities.size, buildings: nb };
+}
+
 // ───────────────────────────── scene: sim (optional, lazy) ─────────────────────────────
 
 const simLoaders = import.meta.glob('../sim/index.ts');
@@ -936,9 +1257,21 @@ function setScene(name: SceneName) {
     if (simAvailable) startSim().catch((e) => report('sim scene', e));
     return;
   }
+  if (name === 'match') {
+    startMatch().catch((e) => report('match scene', e));
+    return;
+  }
   resetFake();
   state.scene = name;
   world = makeWorld();
+  if (name === 'showcase') {
+    const map = makeFlatMap(SIZE);
+    world.map = map; world.setup.map = map;
+    spots = {};
+    buildShowcase();
+    afterSceneChange('helion');
+    return;
+  }
   if (name === 'heavy') buildHeavy();
   else buildGallery();
   afterSceneChange(name === 'heavy' ? 'battle' : 'buildings');
@@ -946,7 +1279,7 @@ function setScene(name: SceneName) {
 
 function afterSceneChange(spot: string) {
   fogOpen = false;
-  if (state.scene !== 'sim') { fogOpen = !state.fog; if (state.fog) for (const p of world.players) { p.visible.fill(0); p.explored.fill(0); } }
+  if (state.scene !== 'sim' && state.scene !== 'match') { fogOpen = !state.fog; if (state.fog) for (const p of world.players) { p.visible.fill(0); p.explored.fill(0); } }
   updateFog();
   rebuildJumps();
   jump(spot);
@@ -968,6 +1301,7 @@ function stampSight(vis: Uint8Array, exp: Uint8Array, cx: number, cy: number, r:
   }
 }
 function updateFog() {
+  if (state.scene === 'match') return; // the real sim owns fog entirely
   world.setup.options.fog = state.fog;
   if (state.scene === 'sim') return; // the real sim owns visible/explored
   if (!state.fog) {
@@ -1185,9 +1519,12 @@ let sRow = section('scene 場景');
 btn(sRow, 'gallery', () => setScene('gallery'), () => state.scene === 'gallery');
 btn(sRow, 'heavy', () => setScene('heavy'), () => state.scene === 'heavy');
 btn(sRow, 'sim', () => setScene('sim'), () => state.scene === 'sim').hidden = !simAvailable;
+btn(sRow, 'showcase', () => setScene('showcase'), () => state.scene === 'showcase');
+btn(sRow, 'match 4×AI', () => setScene('match'), () => state.scene === 'match').hidden = !simAvailable || Object.keys(aiLoaders).length === 0;
+btn(sRow, 'ff 1 min', () => void ff(1200));
 chk(sRow, 'pause', () => state.paused, (v) => { state.paused = v; });
 btn(sRow, 'step', () => { state.paused = true; tick(); });
-sel(sRow, 'viewer', [['0', 'player 0'], ['1', 'player 1']], (v) => { view.viewer = Number(v); view.selection.clear(); fogOpen = false; updateFog(); });
+sel(sRow, 'viewer', [['0', 'player 0'], ['1', 'player 1'], ['2', 'player 2'], ['3', 'player 3']], (v) => { view.viewer = Number(v); view.selection.clear(); fogOpen = false; updateFog(); });
 
 sRow = section('camera 鏡頭');
 for (const z of [0.5, 1, 2]) btn(sRow, `×${z}`, () => setZoom(z), () => Math.abs(R.camera.zoom - z) < 0.01);
@@ -1204,6 +1541,7 @@ chk(sRow, 'labels', () => state.labels, (v) => { state.labels = v; });
 chk(sRow, 'event gen', () => state.gen, (v) => { state.gen = v; });
 chk(sRow, 'icon sheet', () => state.icons, (v) => { state.icons = v; drawIconSheet(); });
 chk(sRow, 'alt colours', () => state.iconsAlt, (v) => { state.iconsAlt = v; drawIconSheet(); });
+chk(sRow, 'silhouettes', () => state.silhouettes, (v) => { state.silhouettes = v; if (v) state.icons = false; drawIconSheet(); });
 sel(sRow, 'placement', [['', '— off —'], ...Object.values(BUILDINGS).map((b): [string, string] => [b.id, `${b.id} ${b.name}`])], (v) => { state.placeDef = v; });
 sel(sRow, 'power target', [['', '— off —'], ...POWER_IDS.map((p): [string, string] => [p, `${p} ${SUPPORT_POWERS[p].name}`])], (v) => { state.power = v as SupportPowerId | ''; });
 
@@ -1265,37 +1603,12 @@ function drawLabels() {
 
 function drawIconSheet() {
   const box = $<HTMLDivElement>('icons'), sheet = $<HTMLCanvasElement>('iconSheet');
-  box.hidden = !state.icons;
-  if (!state.icons) return;
-  const COLS = 10, CW = 88, CH = 98, HEAD = 24, d = window.devicePixelRatio || 1;
-  const groups = (['helion', 'ferrum'] as FactionId[]).map((f) => ({
-    f, color: world.players[Math.min(world.players.length - 1, ownerOf(f) + (state.iconsAlt ? 2 : 0))].color,
-    defs: [...Object.values(BUILDINGS), ...Object.values(UNITS)].filter((v: EntityDef) => v.faction === f) as EntityDef[],
-  }));
-  const hCss = groups.reduce((s, g) => s + HEAD + Math.ceil(g.defs.length / COLS) * CH, 0);
-  sheet.width = Math.round(COLS * CW * d); sheet.height = Math.round(hCss * d);
-  sheet.style.width = `${COLS * CW}px`; sheet.style.height = `${hCss}px`;
-  const c = sheet.getContext('2d')!;
-  c.setTransform(d, 0, 0, d, 0, 0);
-  c.textBaseline = 'top';
-  let y = 0;
-  for (const g of groups) {
-    c.textAlign = 'left'; c.font = '600 13px -apple-system, "PingFang TC", sans-serif'; c.fillStyle = g.color;
-    c.fillText(`${FACTIONS[g.f].name} ${FACTIONS[g.f].nameEn}  ${g.color}`, 4, y + 5);
-    y += HEAD;
-    g.defs.forEach((def, i) => {
-      const x = (i % COLS) * CW, yy = y + Math.floor(i / COLS) * CH;
-      const icon = safe('getIcon', () => R.getIcon(def.id, g.color, 128));
-      if (icon) c.drawImage(icon, x + (CW - 64) / 2, yy, 64, 64);
-      else { c.strokeStyle = '#e5484d'; c.strokeRect(x + (CW - 64) / 2 + 0.5, yy + 0.5, 63, 63); }
-      c.textAlign = 'center';
-      c.font = '11px -apple-system, "PingFang TC", sans-serif'; c.fillStyle = '#e8e6e1';
-      c.fillText(def.name, x + CW / 2, yy + 66, CW - 4);
-      c.font = '9px ui-monospace, Menlo, monospace'; c.fillStyle = '#8fa3b8';
-      c.fillText(def.id, x + CW / 2, yy + 80, CW - 4);
-    });
-    y += Math.ceil(g.defs.length / COLS) * CH;
-  }
+  box.hidden = !state.icons && !state.silhouettes;
+  if (box.hidden) return;
+  const src = state.silhouettes ? silhouetteSheet() : portraitSheet(qNum('icon', 140), state.iconsAlt);
+  sheet.width = src.width; sheet.height = src.height;
+  sheet.style.width = `${src.width / 2}px`; sheet.style.height = `${src.height / 2}px`;
+  sheet.getContext('2d')!.drawImage(src, 0, 0);
 }
 
 const RING = 120;
@@ -1336,7 +1649,9 @@ function runTimers() {
 
 /** One 20 Hz tick. Same convention as the real sim: tick++ and a fresh events array first, so a shot fired this tick has lastFireTick === world.tick. */
 function tick() {
-  if (state.scene === 'sim') {
+  if (state.scene === 'match') {
+    safe('match.tick', () => matchTick(false));
+  } else if (state.scene === 'sim') {
     world.setup.options.fog = state.fog;
     safe('sim.step', () => simApi?.step(world, []));
   } else {
@@ -1382,7 +1697,7 @@ function frame(now: number) {
   safe('cursor', updateCursor);
   ticked = false;
   const t0 = performance.now();
-  safe('render', () => R.render(world, view, alpha));
+  safe('render', () => renderWorld(R, alpha));
   renderMs[ringI] = performance.now() - t0;
   frameMs[ringI] = dt;
   ringI = (ringI + 1) % RING;
@@ -1397,6 +1712,8 @@ function frame(now: number) {
 
 const dev = {
   renderer: R, view, stats, state, FX, setScene, jump, setZoom, triggerFx, tick, spawn, spawnB, removeEntity,
+  ff, matchAt, run, shot, silhouetteSheet, capture, captureBlock, portraitSheet, postCanvas, perf, showBlocks,
+  set showFreeze(v: number) { showFreeze = v; },
   get world() { return world; },
   set world(w: World) { world = w; },
   get spots() { return spots; },
@@ -1408,7 +1725,7 @@ world = makeWorld(); // placeholder so `world` is always defined, then the reque
 checkResize();
 const wantScene = Q.get('scene');
 setScene('gallery');
-if (wantScene === 'heavy') setScene('heavy');
+if (wantScene === 'heavy' || wantScene === 'showcase' || wantScene === 'match') setScene(wantScene);
 else if (wantScene === 'sim') setScene('sim');
 safe('initial camera', () => {
   R.camera.zoom = clamp(qNum('zoom', 1), 0.5, 2);

@@ -162,6 +162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         toggleFullscreen() { post({ type: 'toggleFullscreen' }); },
         setFullscreen(on) { post({ type: 'setFullscreen', on: !!on }); },
         quit() { post({ type: 'quit' }); },
+        // whole-window snapshot (HUD included) saved under ~/Pictures; result arrives as a 'cinder:screenshot' event
+        screenshot() { post({ type: 'screenshot' }); },
         log(...a) { post({ type: 'log', text: a.map(String).join(' ') }); },
         // LAN transport (NativeNetBridge in src/core/api.ts); results arrive as 'cinder:net' events.
         net: Object.freeze({
@@ -179,6 +181,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
       // native → page: batches of NativeNetEvents, dispatched in order
       window.__cinderNetDeliver = (list) => {
         for (const detail of list) window.dispatchEvent(new CustomEvent('cinder:net', { detail }));
+      };
+      window.__cinderScreenshotDone = (d) => {
+        window.dispatchEvent(new CustomEvent('cinder:screenshot', { detail: d }));
       };
       // native → page: fullscreen changes arrive as a 'cinder:fullscreen' CustomEvent
       window.__cinderNativeState = (s) => {
@@ -242,6 +247,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
       if on != window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
     case "quit":
       NSApp.terminate(nil)
+    case "screenshot":
+      saveScreenshot()
     case "log":
       log("js: \(body["text"] as? String ?? "")")
     case "error":
@@ -251,6 +258,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
       if selfTest { DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.runSelfTest() } }
     default:
       break
+    }
+  }
+
+  /// Ctrl+C in game: snapshot the web view and write a PNG to ~/Pictures/燼原戰線/.
+  private func saveScreenshot() {
+    webView.takeSnapshot(with: nil) { [weak self] image, error in
+      guard let self = self else { return }
+      var result: [String: Any] = ["ok": false]
+      do {
+        guard let image = image, let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+          throw error ?? NSError(domain: "CinderFront", code: 1, userInfo: [NSLocalizedDescriptionKey: "snapshot failed"])
+        }
+        let pictures = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
+          ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Pictures")
+        let dir = pictures.appendingPathComponent("燼原戰線", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyyMMdd-HHmmss"
+        let file = dir.appendingPathComponent("截圖-\(fmt.string(from: Date())).png")
+        try png.write(to: file, options: .atomic)
+        result = ["ok": true, "path": "圖片/燼原戰線/\(file.lastPathComponent)"]
+        self.log("screenshot saved: \(file.path)")
+      } catch {
+        result["error"] = error.localizedDescription
+        self.log("screenshot failed: \(error.localizedDescription)")
+      }
+      guard let data = try? JSONSerialization.data(withJSONObject: result),
+            let json = String(data: data, encoding: .utf8) else { return }
+      self.webView.evaluateJavaScript("window.__cinderScreenshotDone && window.__cinderScreenshotDone(\(json))", completionHandler: nil)
     }
   }
 
@@ -554,7 +593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     // `--eval file.js`: extra async JS (function body) run in the page; its return value lands in `eval`.
     var script = body.replacingOccurrences(of: "__RULES__", with: contentRulesActive ? "active" : "missing")
     if let path = argValue("--eval"), let src = try? String(contentsOfFile: path, encoding: .utf8) {
-      script = script.replacingOccurrences(of: "/*EVAL*/", with: "try { r.eval = await (async () => {\n\(src)\n})(); } catch (e) { r.evalError = String((e && e.stack) || e); }")
+      script = script.replacingOccurrences(of: "/*EVAL*/", with: "try { r.eval = await (async () => {\n\(src)\n})(); } catch (e) { r.evalError = String(e && e.message ? e.message + ' @ ' + e.stack : e); }")
     }
     webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { [weak self] result in
       guard let self else { return }

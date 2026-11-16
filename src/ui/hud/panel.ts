@@ -1,9 +1,11 @@
-// Command panel: credits, power, radar minimap, tool/support-power buttons, build tabs + icon grid, tooltip.
+// Command console (the side panel): faction-skinned frame, rolling credit counter, radar screen with power-on /
+// power-off, vertical power gauge, category tabs, two-column portrait build grid, tool row and support powers.
+// DOM is built once and only patched on change; the radar canvas is redrawn ~10×/s (every frame while animating).
 import type { UiDeps, ViewState } from '../../core/api';
 import { TICK_RATE } from '../../core/constants';
 import type { Player, QueueCategory, SupportPowerId, World } from '../../core/types';
 import { SUPPORT_POWERS, WEAPONS } from '../../data';
-import { blitIcon, buildingDef, button, clamp, defOf, el, fmtNum, fmtTime, glyph, nameOf, safeDpr, unitDef } from '../dom';
+import { blitIcon, buildingDef, button, clamp, defOf, el, fmtNum, fmtTime, glyph, nameOf, safeDpr, unitDef, type GLYPHS } from '../dom';
 
 export interface PanelHooks {
   deps: UiDeps;
@@ -27,28 +29,35 @@ export interface Panel {
   cycleTab(dir: 1 | -1): void;
   /** Classic sidebar keys: switch to the first available of these categories (R toggles vehicle ⇄ aircraft). */
   tabKey(cats: QueueCategory[]): void;
+  /** Numpad 8 / 2: scroll the build grid one row up (-1) or down (1). */
+  scrollGrid(dir: 1 | -1): void;
   ping(x: number, y: number, kind: 'bad' | 'warn' | 'good'): void;
   resize(): void;
   hideTooltip(): void;
 }
 
-const CATS: { id: QueueCategory; label: string; en: string; key: string }[] = [
-  { id: 'structure', label: '建築', en: 'Structures', key: 'Q' },
-  { id: 'defense', label: '防禦', en: 'Defences', key: 'W' },
-  { id: 'infantry', label: '步兵', en: 'Infantry', key: 'E' },
-  { id: 'vehicle', label: '載具', en: 'Vehicles', key: 'R' },
-  { id: 'aircraft', label: '航空', en: 'Aircraft', key: 'R' },
+type GlyphName = keyof typeof GLYPHS;
+const CATS: { id: QueueCategory; label: string; en: string; key: string; glyph: GlyphName }[] = [
+  { id: 'structure', label: '建築', en: 'Structures', key: 'Q', glyph: 'cat_structure' },
+  { id: 'defense', label: '防禦', en: 'Defences', key: 'W', glyph: 'cat_defense' },
+  { id: 'infantry', label: '步兵', en: 'Infantry', key: 'E', glyph: 'cat_infantry' },
+  { id: 'vehicle', label: '載具', en: 'Vehicles', key: 'R', glyph: 'cat_vehicle' },
+  { id: 'aircraft', label: '航空', en: 'Aircraft', key: 'R', glyph: 'cat_aircraft' },
 ];
 const ARMOR_ZH: Record<string, string> = { infantry: '步兵', light: '輕甲', heavy: '重甲', building: '建築', air: '飛行' };
+const ODO_DIGITS = 7;
+const BOOT_MS = 950;
+const DOWN_MS = 620;
 
 interface Cell {
   defId: string;
   cat: QueueCategory;
   cost: number;
   root: HTMLButtonElement;
+  icon: HTMLCanvasElement;
   sweep: HTMLElement;
   count: HTMLElement;
-  state: HTMLElement;
+  stamp: HTMLElement;
   lastP: number;
   lastCount: number;
   lastState: string;
@@ -58,11 +67,16 @@ interface Cell {
 interface PowerBtn {
   id: SupportPowerId;
   root: HTMLButtonElement;
-  ring: HTMLElement;
+  fill: HTMLElement;
   label: HTMLElement;
   lastText: string;
   lastP: number;
   lastReady: boolean;
+}
+
+/** Four screw heads / light studs in the corners of a framed element (styled per faction in CSS). */
+function bolts(target: HTMLElement): void {
+  for (const pos of ['tl', 'tr', 'bl', 'br']) target.append(el('i', 'cf-bolt is-' + pos));
 }
 
 export function createPanel(h: PanelHooks): Panel {
@@ -70,44 +84,53 @@ export function createPanel(h: PanelHooks): Panel {
   const audio = deps.audio;
   const me = deps.viewer;
 
-  const root = el('div', 'cf-panel cf-glass');
+  const root = el('div', 'cf-panel cf-console');
   root.addEventListener('contextmenu', (e) => e.preventDefault());
+  bolts(root);
+  root.append(el('i', 'cf-con-strip is-a'), el('i', 'cf-con-strip is-b'));
 
-  // ── resources ──
-  const res = el('div', 'cf-res');
-  const credits = el('div', 'cf-credits');
-  credits.innerHTML = glyph('credit', 18);
-  const creditsNum = el('span', 'cf-credits-num', '0');
-  credits.append(creditsNum);
-  credits.title = '資金 Credits';
-  const power = el('div', 'cf-power');
-  power.title = '電力:消耗 / 產出  Power: used / produced';
-  const powerIcon = el('span', 'cf-power-icon');
-  powerIcon.innerHTML = glyph('bolt', 14);
-  const powerBar = el('div', 'cf-power-bar');
-  const powerFill = el('i');
-  powerBar.append(powerFill);
-  const powerTxt = el('span', 'cf-power-txt', '0 / 0');
-  power.append(powerIcon, powerBar, powerTxt);
-  res.append(credits, power);
+  // ── head: faction mark + rolling credits ──
+  const head = el('div', 'cf-con-head');
+  const emblem = el('div', 'cf-con-emblem');
+  const odo = el('div', 'cf-odo');
+  odo.title = '資金 Credits';
+  const odoIc = el('span', 'cf-odo-ic');
+  odoIc.innerHTML = glyph('credit', 16);
+  odo.append(odoIc);
+  const odoDigits: { strip: HTMLElement; slot: HTMLElement; d: number; lead: boolean }[] = [];
+  for (let i = 0; i < ODO_DIGITS; i++) {
+    const slot = el('span', 'cf-odo-d');
+    const strip = el('span', 'cf-odo-strip');
+    for (let n = 0; n <= 9; n++) strip.append(el('b', '', String(n)));
+    slot.append(strip);
+    odo.append(slot);
+    odoDigits.push({ strip, slot, d: -1, lead: false });
+    const left = ODO_DIGITS - 1 - i;
+    if (left > 0 && left % 3 === 0) odo.append(el('span', 'cf-odo-sep', ','));
+  }
+  head.append(emblem, odo);
 
-  // ── radar ──
+  // ── radar screen ──
   const radar = el('div', 'cf-radar');
+  bolts(radar);
   const radarCanvas = el('canvas', 'cf-radar-canvas');
+  const radarScan = el('div', 'cf-radar-scan');
   const radarOff = el('div', 'cf-radar-off');
-  radarOff.append(el('b', '', '雷達離線'), el('small', '', 'NO SIGNAL'));
+  const radarOffTitle = el('b', '', '雷達離線');
+  const radarOffSub = el('small', '', 'NO SIGNAL');
+  radarOff.append(radarOffTitle, radarOffSub);
   const pings = el('div', 'cf-radar-pings');
-  radar.append(radarCanvas, radarOff, pings);
+  radar.append(radarCanvas, pings, radarScan, radarOff);
   const rctx = radarCanvas.getContext('2d');
 
   // ── tools: repair / sell / support powers ──
   const tools = el('div', 'cf-tools');
-  const repairBtn = button('cf-tool', `${glyph('repair', 16)}<span>修理</span>`, () => {
+  const repairBtn = button('cf-tool', `${glyph('repair', 18)}<span>修理</span><kbd>K</kbd>`, () => {
     audio.playUi('click');
     h.toggleMode('repair');
   });
   repairBtn.title = '修理模式 (K):點擊受損的己方建築  Repair';
-  const sellBtn = button('cf-tool', `${glyph('sell', 16)}<span>變賣</span>`, () => {
+  const sellBtn = button('cf-tool', `${glyph('sell', 18)}<span>變賣</span><kbd>L</kbd>`, () => {
     audio.playUi('click');
     h.toggleMode('sell');
   });
@@ -115,13 +138,27 @@ export function createPanel(h: PanelHooks): Panel {
   const powersBox = el('div', 'cf-powers');
   tools.append(repairBtn, sellBtn, powersBox);
 
-  // ── build tabs + grid ──
+  // ── tabs ──
   const tabs = el('div', 'cf-tabs');
+
+  // ── body: power gauge + build grid ──
+  const body = el('div', 'cf-con-body');
+  const gauge = el('div', 'cf-gauge');
+  const gaugeIc = el('span', 'cf-gauge-ic');
+  gaugeIc.innerHTML = glyph('bolt', 13);
+  const gaugeTrack = el('div', 'cf-gauge-track');
+  const gaugeFill = el('i', 'cf-gauge-fill');
+  const gaugeUse = el('i', 'cf-gauge-use');
+  gaugeTrack.append(gaugeFill, gaugeUse);
+  gauge.append(gaugeIc, gaugeTrack);
+  const gridWell = el('div', 'cf-grid-well');
   const grid = el('div', 'cf-grid');
+  gridWell.append(grid);
+  body.append(gauge, gridWell);
   const empty = el('div', 'cf-grid-empty');
   empty.append(el('b', '', '尚無可建造項目'), el('span', '', '選取基地車並按 D 部署,建立指揮核心。'));
 
-  root.append(res, radar, tools, tabs, grid);
+  root.append(head, radar, tools, tabs, body);
 
   // ── tooltip (lives in the HUD root so the panel never clips it) ──
   const tip = el('div', 'cf-tip cf-glass');
@@ -149,6 +186,12 @@ export function createPanel(h: PanelHooks): Panel {
     tipFor = null;
     tip.style.display = 'none';
   }
+  function hover(target: HTMLElement, make: () => HTMLElement): void {
+    target.addEventListener('pointerenter', () => showTip(target, make()));
+    target.addEventListener('pointerleave', () => {
+      if (tipFor === target) hideTooltip();
+    });
+  }
 
   function statLine(label: string, value: string, cls = ''): HTMLElement {
     const s = el('span', 'cf-tip-stat ' + cls);
@@ -156,19 +199,18 @@ export function createPanel(h: PanelHooks): Panel {
     return s;
   }
 
-  function defTip(defId: string, hotkey: string | null): HTMLElement {
+  function defTip(defId: string): HTMLElement {
     const box = el('div');
     const def = defOf(defId);
     if (!def) {
       box.textContent = defId;
       return box;
     }
-    const head = el('div', 'cf-tip-head');
+    const headEl = el('div', 'cf-tip-head');
     const title = el('div', 'cf-tip-title');
     title.append(el('b', '', def.name), el('small', '', def.nameEn));
-    head.append(title);
-    if (hotkey) head.append(el('kbd', '', hotkey));
-    box.append(head);
+    headEl.append(title);
+    box.append(headEl);
 
     const stats = el('div', 'cf-tip-stats');
     stats.append(statLine('造價', `◆ ${fmtNum(def.cost)}`, 'is-cost'));
@@ -192,18 +234,18 @@ export function createPanel(h: PanelHooks): Panel {
       pr.append(el('small', '', '需求 '), document.createTextNode(def.prereqs.map(nameOf).join('、')));
       box.append(pr);
     }
-    box.append(el('p', 'cf-tip-hint', '點擊:生產 · 次鍵:暫停/取消'));
+    box.append(el('p', 'cf-tip-hint', '點擊:生產(⇧ 五個)· 右鍵:暫停/取消'));
     return box;
   }
 
   function powerTip(id: SupportPowerId): HTMLElement {
     const p = SUPPORT_POWERS[id];
     const box = el('div');
-    const head = el('div', 'cf-tip-head');
+    const headEl = el('div', 'cf-tip-head');
     const title = el('div', 'cf-tip-title');
     title.append(el('b', '', p.name), el('small', '', p.nameEn));
-    head.append(title);
-    box.append(head);
+    headEl.append(title);
+    box.append(headEl);
     const stats = el('div', 'cf-tip-stats');
     stats.append(statLine('充能', fmtTime(p.recharge)));
     stats.append(statLine('半徑', `${p.radius} 格`));
@@ -211,6 +253,31 @@ export function createPanel(h: PanelHooks): Panel {
     box.append(stats, el('p', 'cf-tip-desc', p.desc), el('p', 'cf-tip-hint', '就緒後點擊,再於地圖上指定目標'));
     return box;
   }
+
+  function gaugeTip(): HTMLElement {
+    const p = lastPlayer;
+    const box = el('div');
+    const headEl = el('div', 'cf-tip-head');
+    const title = el('div', 'cf-tip-title');
+    title.append(el('b', '', '電力'), el('small', '', 'Power'));
+    headEl.append(title);
+    box.append(headEl);
+    const stats = el('div', 'cf-tip-stats');
+    const prod = p?.powerProduced ?? 0;
+    const used = p?.powerConsumed ?? 0;
+    stats.append(statLine('產出', String(prod), 'is-good'), statLine('消耗', String(used), used > prod ? 'is-warn' : ''));
+    stats.append(statLine('餘裕', String(prod - used), prod - used < 0 ? 'is-warn' : 'is-good'));
+    box.append(stats);
+    box.append(
+      el(
+        'p',
+        'cf-tip-desc',
+        p?.lowPower ? '電力不足:生產減速、雷達離線、部分防禦停擺。興建電站或變賣耗電建築。' : '綠色柱為發電量,亮線為目前用電量。用電接近發電上限時轉為黃色。',
+      ),
+    );
+    return box;
+  }
+  hover(gauge, gaugeTip);
 
   // ── build options state ──
   let optionsSig = '';
@@ -224,6 +291,7 @@ export function createPanel(h: PanelHooks): Panel {
   let lastWorld: World | null = null;
   let lastPlayer: Player | null = null;
   let iconColor = '#888';
+  let iconCss = 0;
 
   function iconInto(canvas: HTMLCanvasElement, defId: string, cssSize: number): void {
     const dpr = safeDpr();
@@ -247,13 +315,25 @@ export function createPanel(h: PanelHooks): Panel {
       }
     }
   }
+  /** Portrait size follows the column width; re-request icons only when it really changed. */
+  function cellCss(): number {
+    const w = grid.clientWidth;
+    if (w <= 0) return 110;
+    return Math.max(56, Math.floor((w - 8) / 2));
+  }
+  function refreshIcons(force: boolean): void {
+    const size = cellCss();
+    if (!force && Math.abs(size - iconCss) < 6) return;
+    iconCss = size;
+    for (const c of cells) iconInto(c.icon, c.defId, size);
+  }
 
   function clickCell(cell: Cell, secondary: boolean, shift: boolean): void {
     const p = lastPlayer;
     if (!p) return;
     const q = p.queues[cell.cat];
-    const head = q.items[0];
-    const isHead = !!head && head.defId === cell.defId;
+    const headItem = q.items[0];
+    const isHead = !!headItem && headItem.defId === cell.defId;
     if (secondary) {
       if (!q.items.some((it) => it.defId === cell.defId)) return;
       deps.send({ type: 'cancelProduction', player: me, defId: cell.defId });
@@ -285,32 +365,33 @@ export function createPanel(h: PanelHooks): Panel {
       grid.append(empty);
       return;
     }
-    ids.forEach((defId, i) => {
+    const size = cellCss();
+    iconCss = size;
+    for (const defId of ids) {
       const def = defOf(defId);
-      if (!def) return;
+      if (!def) continue;
       const b = el('button', 'cf-cell');
       b.type = 'button';
+      const pic = el('div', 'cf-cell-pic');
       const icon = el('canvas', 'cf-cell-icon');
       const sweep = el('div', 'cf-cell-sweep');
       const count = el('span', 'cf-cell-count');
-      const state = el('span', 'cf-cell-state');
+      const stamp = el('span', 'cf-cell-stamp');
+      pic.append(icon, sweep, stamp, count);
       const foot = el('div', 'cf-cell-foot');
       foot.append(el('span', 'cf-cell-name', def.name), el('span', 'cf-cell-cost', fmtNum(def.cost)));
-      b.append(icon, sweep, count, state, foot);
-      const cell: Cell = { defId, cat: activeCat, cost: def.cost, root: b, sweep, count, state, lastP: -2, lastCount: -1, lastState: '', lastPoor: false };
+      b.append(pic, foot);
+      const cell: Cell = { defId, cat: activeCat, cost: def.cost, root: b, icon, sweep, count, stamp, lastP: -2, lastCount: -1, lastState: '', lastPoor: false };
       b.addEventListener('click', (e) => clickCell(cell, false, e.shiftKey));
       b.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         clickCell(cell, true, false);
       });
-      b.addEventListener('pointerenter', () => showTip(b, defTip(defId, null)));
-      b.addEventListener('pointerleave', () => {
-        if (tipFor === b) hideTooltip();
-      });
+      hover(b, () => defTip(defId));
       grid.append(b);
       cells.push(cell);
-      iconInto(icon, defId, 72);
-    });
+      iconInto(icon, defId, size);
+    }
     grid.scrollTop = 0;
   }
 
@@ -341,36 +422,45 @@ export function createPanel(h: PanelHooks): Panel {
       list.push(o.defId);
     }
     availableCats = CATS.map((c) => c.id).filter((c) => optionsByCat.has(c));
-    tabs.replaceChildren();
-    tabEls.clear();
-    for (const c of CATS) {
-      if (!optionsByCat.has(c.id)) continue;
-      const b = button('cf-tab', `<span>${c.label}</span><b class="cf-tab-key">${c.key}</b><i></i>`, () => setTab(c.id, true));
-      b.title = `${c.label} ${c.en} (${c.key})`;
-      tabs.append(b);
-      tabEls.set(c.id, { b, last: '' });
+    // tabs: every category of the faction is shown; the ones not unlocked yet are dark
+    if (!tabEls.size) {
+      for (const c of CATS) {
+        const b = button('cf-tab', `${glyph(c.glyph, 20)}<span>${c.label}</span><b class="cf-tab-key">${c.key}</b><i></i>`, () => {
+          if (b.disabled) return;
+          setTab(c.id, true);
+        });
+        b.title = `${c.label} ${c.en} (${c.key})`;
+        tabs.append(b);
+        tabEls.set(c.id, { b, last: '' });
+      }
     }
-    tabs.style.display = availableCats.length ? '' : 'none';
+    for (const [id, t] of tabEls) {
+      const on = optionsByCat.has(id);
+      t.b.disabled = !on;
+      // the aircraft tab only exists once the faction can make aircraft at all
+      if (id === 'aircraft') t.b.style.display = on ? '' : 'none';
+    }
     if (!optionsByCat.has(activeCat)) activeCat = availableCats[0] ?? 'structure';
-    for (const [id, t] of tabEls) t.b.classList.toggle('is-on', id === activeCat);
+    for (const [id, t] of tabEls) t.b.classList.toggle('is-on', id === activeCat && optionsByCat.has(id));
     buildGrid();
   }
 
   function updateCells(player: Player): void {
     const q = player.queues[activeCat];
     if (!q) return;
-    const head = q.items[0];
+    const headItem = q.items[0];
     for (const cell of cells) {
       let count = 0;
       for (const it of q.items) if (it.defId === cell.defId) count++;
-      const isHead = !!head && head.defId === cell.defId;
+      const isHead = !!headItem && headItem.defId === cell.defId;
       const st = isHead ? (q.ready ? 'ready' : q.paused ? 'paused' : 'building') : count > 0 ? 'queued' : 'idle';
-      const p = isHead ? (q.ready ? 100 : Math.round(clamp(head.progress, 0, 1) * 200) / 2) : -1;
+      const p = isHead ? (q.ready ? 100 : Math.round(clamp(headItem.progress, 0, 1) * 400) / 4) : -1;
       if (st !== cell.lastState) {
         cell.lastState = st;
         cell.root.className = 'cf-cell is-' + st;
         cell.lastPoor = false;
-        cell.state.textContent = st === 'ready' ? '就緒' : st === 'paused' ? '暫停' : '';
+        cell.stamp.textContent = st === 'ready' ? '就緒' : st === 'paused' ? '暫停' : '';
+        if (st === 'ready') audio.playUi('select');
       }
       if (p !== cell.lastP) {
         cell.lastP = p;
@@ -380,7 +470,7 @@ export function createPanel(h: PanelHooks): Panel {
         cell.lastCount = count;
         cell.count.textContent = count > 1 || (count === 1 && !isHead) ? String(count) : '';
       }
-      const poor = st === 'idle' && player.credits < cell.cost;
+      const poor = (st === 'idle' || st === 'queued') && player.credits < cell.cost;
       if (poor !== cell.lastPoor) {
         cell.lastPoor = poor;
         cell.root.classList.toggle('is-poor', poor);
@@ -410,11 +500,14 @@ export function createPanel(h: PanelHooks): Panel {
         if (!SUPPORT_POWERS[ps.id]) continue;
         const b = el('button', 'cf-pow');
         b.type = 'button';
-        const ring = el('div', 'cf-pow-ring');
-        ring.innerHTML = glyph(ps.id, 18);
+        const ic = el('span', 'cf-pow-ic');
+        ic.innerHTML = glyph(ps.id, 18);
+        const bar = el('span', 'cf-pow-bar');
+        const fill = el('i');
+        bar.append(fill);
         const label = el('span', 'cf-pow-t');
-        b.append(ring, label);
-        const pb: PowerBtn = { id: ps.id, root: b, ring, label, lastText: '', lastP: -1, lastReady: false };
+        b.append(ic, label, bar);
+        const pb: PowerBtn = { id: ps.id, root: b, fill, label, lastText: '', lastP: -1, lastReady: false };
         b.addEventListener('click', () => {
           const cur = lastPlayer?.powers.find((x) => x.id === ps.id);
           if (cur?.ready) {
@@ -422,13 +515,11 @@ export function createPanel(h: PanelHooks): Panel {
             h.enterPower(ps.id);
           } else audio.playUi('error');
         });
-        b.addEventListener('pointerenter', () => showTip(b, powerTip(ps.id)));
-        b.addEventListener('pointerleave', () => {
-          if (tipFor === b) hideTooltip();
-        });
+        hover(b, () => powerTip(ps.id));
         powersBox.append(b);
         powerBtns.push(pb);
       }
+      tools.classList.toggle('has-powers', powerBtns.length > 0);
     }
     for (const pb of powerBtns) {
       const ps = player.powers.find((x) => x.id === pb.id);
@@ -437,7 +528,7 @@ export function createPanel(h: PanelHooks): Panel {
       const p = ps.ready ? 100 : Math.floor(frac * 100);
       if (p !== pb.lastP) {
         pb.lastP = p;
-        pb.ring.style.setProperty('--p', String(p));
+        pb.fill.style.transform = `scaleX(${(p / 100).toFixed(2)})`;
       }
       const text = ps.ready ? '就緒' : fmtTime(Math.ceil((ps.chargeMax - ps.charge) / TICK_RATE));
       if (text !== pb.lastText) {
@@ -451,51 +542,63 @@ export function createPanel(h: PanelHooks): Panel {
     }
   }
 
-  // ── minimap ──
+  // ── radar ──
   let mmW = 0; // device px
   let mmH = 0;
   let cssW = 0; // css px — the units handed to the renderer
   let cssH = 0;
   let mmDpr = 1;
   let mmAt = -1e9;
-  let radarOn: boolean | null = null;
   let noise: HTMLCanvasElement | null = null;
+  /** off → boot (noise → band reveal) → on → down (CRT collapse) → off */
+  let radarState: 'off' | 'boot' | 'on' | 'down' = 'off';
+  let radarT0 = 0;
+  let radarFirst = true;
+  let snapshot: HTMLCanvasElement | null = null;
+  let offReason = '';
 
   function resize(): void {
     const w = radar.clientWidth;
     const hh = radar.clientHeight;
-    if (w <= 0 || hh <= 0) return;
-    mmDpr = safeDpr();
-    cssW = w;
-    cssH = hh;
-    mmW = Math.round(w * mmDpr);
-    mmH = Math.round(hh * mmDpr);
-    if (radarCanvas.width !== mmW) radarCanvas.width = mmW;
-    if (radarCanvas.height !== mmH) radarCanvas.height = mmH;
-    mmAt = -1e9;
+    if (w > 0 && hh > 0) {
+      mmDpr = safeDpr();
+      cssW = w;
+      cssH = hh;
+      mmW = Math.round(w * mmDpr);
+      mmH = Math.round(hh * mmDpr);
+      if (radarCanvas.width !== mmW) radarCanvas.width = mmW;
+      if (radarCanvas.height !== mmH) radarCanvas.height = mmH;
+      mmAt = -1e9;
+    }
+    if (cells.length) refreshIcons(false);
   }
 
-  function drawStatic(now: number): void {
+  function drawNoise(alpha = 1): void {
     if (!rctx) return;
     if (!noise) {
       noise = document.createElement('canvas');
-      noise.width = 64;
-      noise.height = 64;
+      noise.width = 72;
+      noise.height = 72;
     }
     const nc = noise.getContext('2d');
     if (!nc) return;
-    const img = nc.createImageData(64, 64);
+    const img = nc.createImageData(72, 72);
     for (let i = 0; i < img.data.length; i += 4) {
-      const v = 14 + Math.random() * 34;
+      const v = 12 + Math.random() * 40;
       img.data[i] = v;
-      img.data[i + 1] = v + 4;
-      img.data[i + 2] = v + 8;
+      img.data[i + 1] = v + 5;
+      img.data[i + 2] = v + 7;
       img.data[i + 3] = 255;
     }
     nc.putImageData(img, 0, 0);
     rctx.setTransform(1, 0, 0, 1, 0, 0);
+    rctx.globalAlpha = alpha;
     rctx.imageSmoothingEnabled = false;
     rctx.drawImage(noise, 0, 0, mmW, mmH);
+    rctx.globalAlpha = 1;
+  }
+  function drawRollBar(now: number): void {
+    if (!rctx) return;
     const y = ((now / 14) % (mmH + 40)) - 20;
     const g = rctx.createLinearGradient(0, y - 20, 0, y + 20);
     g.addColorStop(0, 'rgba(255,255,255,0)');
@@ -504,18 +607,8 @@ export function createPanel(h: PanelHooks): Panel {
     rctx.fillStyle = g;
     rctx.fillRect(0, y - 20, mmW, 40);
   }
-
-  function drawMinimap(world: World, player: Player, now: number): void {
-    if (!rctx || mmW <= 0) return;
-    if (player.hasRadar !== radarOn) {
-      radarOn = player.hasRadar;
-      radar.classList.toggle('is-off', !radarOn);
-      if (!radarOn) pings.replaceChildren();
-    }
-    if (!player.hasRadar) {
-      drawStatic(now);
-      return;
-    }
+  function drawPicture(world: World): void {
+    if (!rctx) return;
     // CSS-unit drawing on a dpr-scaled context: crisp on Retina, same convention as the renderer's own dev page.
     rctx.setTransform(mmDpr, 0, 0, mmDpr, 0, 0);
     rctx.imageSmoothingEnabled = true;
@@ -527,6 +620,118 @@ export function createPanel(h: PanelHooks): Panel {
       /* renderer not ready */
     }
     rctx.restore();
+    rctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  function setRadarClass(): void {
+    radar.classList.toggle('is-off', radarState === 'off');
+    radar.classList.toggle('is-anim', radarState === 'boot' || radarState === 'down');
+  }
+
+  let dishAt = -1e9;
+  let dish = false;
+  /** The sim clears hasRadar on low power; look for an own finished radar building to say why it is dark. */
+  function ownsRadarBuilding(world: World, now: number): boolean {
+    if (now - dishAt < 500) return dish;
+    dishAt = now;
+    dish = false;
+    for (const e of world.entities.values()) {
+      if (e.owner === me && e.kind === 'building' && e.buildProgress >= 1 && buildingDef(e.defId)?.radar) {
+        dish = true;
+        break;
+      }
+    }
+    return dish;
+  }
+
+  function stepRadar(world: World, player: Player, now: number): void {
+    const want = player.hasRadar && !player.lowPower;
+    const reason = want ? '' : player.hasRadar || (player.lowPower && ownsRadarBuilding(world, now)) ? 'power' : 'none';
+    if (reason && reason !== offReason) {
+      offReason = reason;
+      radarOffTitle.textContent = reason === 'power' ? '電力不足' : '雷達離線';
+      radarOffSub.textContent = reason === 'power' ? 'LOW POWER' : 'NO SIGNAL';
+    }
+    if (radarFirst) {
+      radarFirst = false;
+      radarState = want ? 'on' : 'off';
+      setRadarClass();
+    } else if (want && (radarState === 'off' || radarState === 'down')) {
+      radarState = 'boot';
+      radarT0 = now;
+      setRadarClass();
+      audio.playUi('select');
+    } else if (!want && (radarState === 'on' || radarState === 'boot')) {
+      // keep the last picture to collapse it like a tube switching off
+      if (mmW > 0) {
+        snapshot = snapshot ?? document.createElement('canvas');
+        snapshot.width = mmW;
+        snapshot.height = mmH;
+        snapshot.getContext('2d')?.drawImage(radarCanvas, 0, 0);
+      }
+      radarState = 'down';
+      radarT0 = now;
+      setRadarClass();
+      pings.replaceChildren();
+      audio.playUi('cancel');
+    }
+  }
+
+  function drawRadar(world: World, now: number): void {
+    if (!rctx || mmW <= 0) return;
+    const t = (now - radarT0) / (radarState === 'boot' ? BOOT_MS : DOWN_MS);
+    if (radarState === 'boot') {
+      if (t >= 1) {
+        radarState = 'on';
+        setRadarClass();
+        drawPicture(world);
+        return;
+      }
+      // noise, then a bright band opening from the centre line reveals the picture
+      if (t < 0.35) {
+        drawNoise(0.6 + t);
+        rctx.fillStyle = `rgba(160,255,220,${(0.08 + 0.3 * Math.random() * t).toFixed(3)})`;
+        rctx.fillRect(0, 0, mmW, mmH);
+        return;
+      }
+      const k = (t - 0.35) / 0.65;
+      const e = 1 - (1 - k) * (1 - k);
+      drawPicture(world);
+      const band = Math.max(2, mmH * e);
+      const top = (mmH - band) / 2;
+      rctx.fillStyle = '#05080a';
+      rctx.fillRect(0, 0, mmW, top);
+      rctx.fillRect(0, top + band, mmW, mmH - top - band);
+      rctx.fillStyle = `rgba(190,255,230,${(0.75 * (1 - e)).toFixed(3)})`;
+      rctx.fillRect(0, top - 1, mmW, 2 * mmDpr);
+      rctx.fillRect(0, top + band - 1, mmW, 2 * mmDpr);
+      rctx.fillStyle = `rgba(140,255,210,${(0.18 * (1 - e)).toFixed(3)})`;
+      rctx.fillRect(0, top, mmW, band);
+      return;
+    }
+    if (radarState === 'down') {
+      if (t >= 1) {
+        radarState = 'off';
+        setRadarClass();
+        drawNoise();
+        return;
+      }
+      rctx.setTransform(1, 0, 0, 1, 0, 0);
+      rctx.fillStyle = '#030405';
+      rctx.fillRect(0, 0, mmW, mmH);
+      const squash = Math.min(1, t / 0.55);
+      const hgt = Math.max(2 * mmDpr, mmH * (1 - squash * squash));
+      const wid = t < 0.55 ? mmW : Math.max(2 * mmDpr, mmW * (1 - (t - 0.55) / 0.45));
+      if (snapshot && t < 0.55) rctx.drawImage(snapshot, 0, (mmH - hgt) / 2, mmW, hgt);
+      rctx.fillStyle = `rgba(220,255,240,${(0.25 + 0.6 * squash).toFixed(3)})`;
+      rctx.fillRect((mmW - wid) / 2, (mmH - Math.min(hgt, 3 * mmDpr)) / 2, wid, Math.min(hgt, 3 * mmDpr));
+      return;
+    }
+    if (radarState === 'on') drawPicture(world);
+    else {
+      drawNoise();
+      drawRollBar(now);
+    }
   }
 
   function miniToWorld(e: PointerEvent): { x: number; y: number } | null {
@@ -567,11 +772,10 @@ export function createPanel(h: PanelHooks): Panel {
   let mmDrag = false;
   radarCanvas.addEventListener('pointerdown', (e) => {
     e.preventDefault();
-    if (!lastPlayer?.hasRadar) return;
+    if (radarState !== 'on') return;
     const w = miniToWorld(e);
     if (!w) return;
-    const secondary = e.button === 2 || (e.button === 0 && e.ctrlKey);
-    if (secondary) {
+    if (e.button === 2) {
       h.commandAt(w.x, w.y, e.shiftKey);
       return;
     }
@@ -595,11 +799,32 @@ export function createPanel(h: PanelHooks): Panel {
   radarCanvas.addEventListener('pointerup', endDrag);
   radarCanvas.addEventListener('pointercancel', endDrag);
 
-  // ── credits / power ──
+  // ── credits (odometer) / power gauge ──
   let shownCredits = -1;
-  let shownCreditsText = '';
+  let shownInt = -1;
   let creditDir = 0;
   let powerSig = '';
+  let faction = '';
+
+  function paintOdometer(value: number): void {
+    const s = String(Math.max(0, Math.min(10 ** ODO_DIGITS - 1, value))).padStart(ODO_DIGITS, '0');
+    let leading = true;
+    for (let i = 0; i < ODO_DIGITS; i++) {
+      const d = s.charCodeAt(i) - 48;
+      if (d !== 0 || i === ODO_DIGITS - 1) leading = false;
+      const slot = odoDigits[i];
+      if (slot.d !== d) {
+        slot.d = d;
+        slot.strip.style.transform = `translateY(${-d * 10}%)`;
+      }
+      if (slot.lead !== leading) {
+        slot.lead = leading;
+        slot.slot.classList.toggle('is-lead', leading);
+        const sep = slot.slot.nextElementSibling;
+        if (sep && sep.classList.contains('cf-odo-sep')) sep.classList.toggle('is-lead', leading);
+      }
+    }
+  }
 
   function updateResources(player: Player, dtMs: number): void {
     const target = player.credits;
@@ -608,32 +833,46 @@ export function createPanel(h: PanelHooks): Panel {
     let dir = 0;
     if (Math.abs(diff) < 1) shownCredits = target;
     else {
-      const stepMin = Math.sign(diff) * Math.min(Math.abs(diff), Math.max(1, dtMs * 0.05));
-      const eased = diff * (1 - Math.exp(-dtMs / 110));
+      // tick toward the real value: fast for big jumps, but never slower than ~400 credits/s
+      const stepMin = Math.sign(diff) * Math.min(Math.abs(diff), Math.max(1, dtMs * 0.4));
+      const eased = diff * (1 - Math.exp(-dtMs / 260));
       shownCredits += Math.abs(eased) > Math.abs(stepMin) ? eased : stepMin;
       dir = diff > 0 ? 1 : -1;
     }
-    const text = fmtNum(Math.floor(shownCredits));
-    if (text !== shownCreditsText) {
-      shownCreditsText = text;
-      creditsNum.textContent = text;
+    const v = Math.floor(shownCredits);
+    if (v !== shownInt) {
+      shownInt = v;
+      paintOdometer(v);
     }
     if (dir !== creditDir) {
       creditDir = dir;
-      credits.classList.toggle('is-up', dir > 0);
-      credits.classList.toggle('is-down', dir < 0);
+      odo.classList.toggle('is-up', dir > 0);
+      odo.classList.toggle('is-down', dir < 0);
     }
     const sig = `${player.powerProduced}|${player.powerConsumed}|${player.lowPower ? 1 : 0}`;
     if (sig !== powerSig) {
       powerSig = sig;
       const prod = player.powerProduced;
       const used = player.powerConsumed;
-      powerTxt.textContent = `${used} / ${prod}`;
-      const frac = prod > 0 ? clamp(used / prod, 0, 1) : used > 0 ? 1 : 0;
-      powerFill.style.transform = `scaleX(${frac.toFixed(3)})`;
-      power.classList.toggle('is-low', player.lowPower);
-      power.classList.toggle('is-tight', !player.lowPower && prod > 0 && used / prod > 0.85);
+      const scale = Math.max(100, prod, used) * 1.15;
+      gaugeFill.style.transform = `scaleY(${clamp(prod / scale, 0, 1).toFixed(3)})`;
+      gaugeUse.style.bottom = `${(clamp(used / scale, 0, 1) * 100).toFixed(1)}%`;
+      const tight = !player.lowPower && prod > 0 && used / prod > 0.85;
+      gauge.classList.toggle('is-low', player.lowPower);
+      gauge.classList.toggle('is-tight', tight);
+      gridWell.classList.toggle('is-lowpow', player.lowPower);
+      if (tipFor === gauge) showTip(gauge, gaugeTip());
     }
+  }
+
+  function applyFaction(player: Player): void {
+    const f = player.faction === 'helion' ? 'helion' : 'ferrum';
+    if (f === faction) return;
+    faction = f;
+    root.classList.toggle('is-helion', f === 'helion');
+    root.classList.toggle('is-ferrum', f === 'ferrum');
+    emblem.innerHTML = glyph(f === 'helion' ? 'emblem_helion' : 'emblem_ferrum', 26);
+    emblem.title = f === 'helion' ? '赫利昂 Helion' : '鐵燼 Ferrum';
   }
 
   let lastMode = '';
@@ -643,6 +882,7 @@ export function createPanel(h: PanelHooks): Panel {
     update(world, player, now, dtMs) {
       lastWorld = world;
       lastPlayer = player;
+      applyFaction(player);
       if (mmW === 0) resize();
       updateResources(player, dtMs);
       if (dirty || now - optionsAt > 250) {
@@ -652,9 +892,11 @@ export function createPanel(h: PanelHooks): Panel {
         updatePowers(player);
       }
       updateCells(player);
-      if (now - mmAt > (player.hasRadar ? 100 : 140)) {
+      stepRadar(world, player, now);
+      const animating = radarState === 'boot' || radarState === 'down';
+      if (animating || now - mmAt > (radarState === 'on' ? 100 : 140)) {
         mmAt = now;
-        drawMinimap(world, player, now);
+        drawRadar(world, now);
       }
       const mode = h.modeKind();
       if (mode !== lastMode) {
@@ -673,6 +915,10 @@ export function createPanel(h: PanelHooks): Panel {
       const n = availableCats.length;
       setTab(availableCats[(i + dir + n) % n], true);
     },
+    scrollGrid(dir) {
+      const row = (grid.firstElementChild as HTMLElement | null)?.offsetHeight || 64;
+      grid.scrollBy({ top: dir * row, behavior: 'smooth' });
+    },
     tabKey(cats) {
       const avail = cats.filter((c) => availableCats.includes(c));
       if (!avail.length) {
@@ -684,7 +930,7 @@ export function createPanel(h: PanelHooks): Panel {
       setTab(avail[at < 0 ? 0 : (at + 1) % avail.length], true);
     },
     ping(x, y, kind) {
-      if (!lastPlayer?.hasRadar) return;
+      if (radarState !== 'on') return;
       const f = worldToMiniFrac(x, y);
       if (!f || f.fx < 0 || f.fx > 1 || f.fy < 0 || f.fy > 1) return;
       const p = el('i', 'cf-ping is-' + kind);

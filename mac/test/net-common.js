@@ -8,12 +8,19 @@ if (!Object.isFrozen(window.cinderNative) || !Object.isFrozen(net)) throw new Er
 const say = (...a) => window.cinderNative.log(...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const events = [];
+/** Test-side listeners (window listeners never see 'cinder:net' — see below); called with each event's detail. */
+const taps = new Set();
 let cursor = 0;
 let wake = null;
+// The game's own net module (src/net) also listens for 'cinder:net' on the menu page and closes any
+// connection it did not open itself — correct in the game, fatal for this raw bridge test. Capture-phase
+// listeners on the target run first, so take the events here and keep them from reaching the game.
 window.addEventListener('cinder:net', (e) => {
+  e.stopImmediatePropagation();
   events.push(e.detail);
+  for (const tap of taps) tap(e.detail);
   if (wake) { const w = wake; wake = null; w(); }
-});
+}, { capture: true });
 /** Next event (after the previous match) satisfying `pred`; events skipped over stay available to `seen`. */
 async function next(pred, ms = 10000, label = 'event') {
   const deadline = performance.now() + ms;

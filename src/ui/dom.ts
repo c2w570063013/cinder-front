@@ -111,5 +111,14 @@ export const GLYPHS = {
   flag: '<path d="M6 21V4"/><path d="M6 5h12l-3 4 3 4H6"/>',
   pause: '<path d="M8.500 5v14M15.500 5v14"/>',
   chat: '<path d="M4 5.500h16v10H11l-4.500 3.500V15.500H4Z"/><path d="M8 10.500h8"/>',
+  // build-tab category marks
+  cat_structure: '<path d="M3 20.500h18"/><path d="M5 20.500V10l7-4.500 7 4.500v10.500"/><path d="M9.500 20.500v-5h5v5"/><path d="M12 5.500V2.500h3"/>',
+  cat_defense: '<path d="M12 3 4.500 6v5.500c0 4.400 3.100 7.700 7.500 9.500 4.400-1.800 7.500-5.100 7.500-9.500V6Z"/><path d="M12 8v4.500M9.500 12.500h5"/>',
+  cat_infantry: '<circle cx="12" cy="5.500" r="2.300"/><path d="M8.500 21l1.200-7-2.200-1.500 2-4.200h5l2 4.200-2.200 1.500 1.200 7"/>',
+  cat_vehicle: '<rect x="3" y="12" width="18" height="6" rx="3"/><path d="M7 12V9h7l2 3"/><path d="M14 10.500h7"/><circle cx="7" cy="15" r="1" fill="currentColor"/><circle cx="12" cy="15" r="1" fill="currentColor"/><circle cx="17" cy="15" r="1" fill="currentColor"/>',
+  cat_aircraft: '<path d="M12 2.500c1 0 1.500 1.500 1.500 3.500v3.500l7.500 4.500v2l-7.500-2.200v4l2.500 2v1.500L12 20l-4 1.300v-1.500l2.500-2v-4L3 16v-2l7.500-4.500V6c0-2 .5-3.500 1.500-3.500Z"/>',
+  // faction marks (our own: a sun ring for Helion, a struck ingot for Ferrum)
+  emblem_helion: '<circle cx="12" cy="12" r="4.200"/><circle cx="12" cy="12" r="8" stroke-dasharray="2.600 2.200"/><path d="M12 1.500v2.500M12 20v2.500M1.500 12H4M20 12h2.500"/>',
+  emblem_ferrum: '<path d="M3.500 9.500h17l-2.500 5H6Z"/><path d="M8.500 14.500v5h7v-5"/><path d="M6 6.500 9 3M12 6V2.500M18 6.500 15 3"/>',
   link: '<path d="M5 12h3l2-5 4 10 2-5h3"/>',
 } as const;

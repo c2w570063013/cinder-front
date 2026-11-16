@@ -215,6 +215,7 @@ export function buildHowTo(): HTMLElement {
       { keys: ['空白鍵'], what: '跳到最近的警報位置(連按切換較早的警報)' },
       { keys: ['H'], what: '回到基地' },
       { keys: ['F'], what: '鏡頭跟隨選取的單位,移動鏡頭即取消' },
+      { keys: ['數字鍵盤 5'], what: '鏡頭置中於選取的單位' },
       { keys: ['F1–F4'], what: '跳到儲存的鏡頭位置' },
       { keys: [`${CTRL}F1–F4`, `${SHIFT}F1–F4`], what: '儲存目前鏡頭位置' },
       { keys: ['↑', '↓', '←', '→'], what: '捲動畫面' },
@@ -226,6 +227,7 @@ export function buildHowTo(): HTMLElement {
       { keys: ['E'], what: '步兵分頁' },
       { keys: ['R'], what: '載具分頁(再按一次切換航空)' },
       { keys: ['Tab'], what: `依序切換分頁(${SHIFT} 反向)` },
+      { keys: ['數字鍵盤 8', '數字鍵盤 2'], what: '建造清單向上/向下捲動' },
       { keys: ['K'], what: '修理模式:點擊受損建築' },
       { keys: ['L'], what: '變賣模式:點擊己方建築' },
       { keys: ['左鍵點圖示'], what: '加入生產;完成的建築:進入放置模式' },
@@ -239,6 +241,7 @@ export function buildHowTo(): HTMLElement {
       { keys: ['Esc'], what: '取消目前模式;否則開啟選單(遭遇戰中會暫停)' },
       { keys: ['Pause'], what: '暫停/繼續(遭遇戰;區網對戰無法暫停)' },
       { keys: ['Enter'], what: '區網對戰:開啟聊天' },
+      { keys: ['⌃C'], what: isMac ? '截圖(存到「圖片/燼原戰線」)' : '截圖(下載 PNG)' },
       { keys: isMac ? ['⌃⌘F'] : ['F11'], what: '切換全螢幕' },
     ]),
   );

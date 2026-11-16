@@ -33,6 +33,16 @@ export interface BuildingSprites {
   w: number;
   h: number;
   gen: number;
+  /** Local points [x, y, z] (tiles) where damage smoke / fire / sparks appear, most prominent first. */
+  hot: number[][];
+  ferrum: boolean;
+}
+
+/** Geometry-derived data shared by every colour / variant of a building def. */
+interface BuildingBase {
+  body: Sprite;
+  shadow: Sprite;
+  hot: number[][];
 }
 
 const palCache = new Map<string, Pal>();
@@ -94,6 +104,7 @@ export class SpriteBank {
   flush(): void {
     this.units.clear();
     this.buildings.clear();
+    this.bases.clear();
     this.props.length = 0;
     this.pixels = 0;
     this.gen++;
@@ -163,6 +174,32 @@ export class SpriteBank {
     return sp;
   }
 
+  private bases = new Map<string, BuildingBase>();
+
+  /** Pristine body (lit or unlit) with baked bloom and weathering; damage variants are derived from it. */
+  private base(defId: string, color: string, unlit: boolean, mask: number): BuildingBase {
+    const key = defId + '|' + color + '|' + (unlit ? 1 : 0) + '|' + mask;
+    let b = this.bases.get(key);
+    if (b) return b;
+    const def = BUILDINGS[defId];
+    const art = BUILDING_ART[defId] ?? BUILDING_FALLBACK;
+    const m = new Model();
+    m.unlit = unlit;
+    art.build(m, palOf(color), mask);
+    const body = renderSprite(m, 0, this.scale, { outline: 0.55, bloom: unlit ? 0 : 0.55, grime: def?.faction === 'ferrum' ? 1 : 0.35, pad: 5 });
+    if (unlit) {
+      const ctx = body.c.getContext('2d')!;
+      ctx.globalCompositeOperation = 'source-atop';
+      ctx.fillStyle = 'rgba(16,20,30,0.42)';
+      ctx.fillRect(0, 0, body.c.width, body.c.height);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    const w = def ? def.footprint.w : 1, h = def ? def.footprint.h : 1;
+    b = { body: this.account(body), shadow: this.account(buildingShadow(m, w, h)), hot: hotPoints(m) };
+    this.bases.set(key, b);
+    return b;
+  }
+
   /** variant bits: 1 = unlit (unpowered), 2 = damaged, 4 = heavily damaged. `mask` = wall neighbours. */
   building(defId: string, color: string, variant: number, mask: number): BuildingSprites {
     const key = defId + '|' + color + '|' + variant + '|' + mask;
@@ -170,43 +207,68 @@ export class SpriteBank {
     if (b) return b;
     const def = BUILDINGS[defId];
     const art = BUILDING_ART[defId] ?? BUILDING_FALLBACK;
-    const pal = palOf(color);
-    const m = new Model();
-    m.unlit = (variant & 1) !== 0;
-    art.build(m, pal, mask);
-    const sc = this.scale;
-    const body = renderSprite(m, 0, sc, { outline: 0.55 });
-    const ctx = body.c.getContext('2d')!;
-    if (variant & 1) {
-      ctx.globalCompositeOperation = 'source-atop';
-      ctx.fillStyle = 'rgba(16,20,30,0.42)';
-      ctx.fillRect(0, 0, body.c.width, body.c.height);
-    }
+    const base = this.base(defId, color, (variant & 1) !== 0, mask);
+    let body = base.body;
     if (variant & 6) {
-      // scorch blotches + cracks baked onto the silhouette
+      // battle damage painted over a copy of the pristine sprite: soot, torn plating, smouldering holes
+      const sc = this.scale;
+      const c = makeCanvas(body.c.width, body.c.height);
+      const ctx = c.getContext('2d')!;
+      ctx.drawImage(body.c, 0, 0);
       ctx.globalCompositeOperation = 'source-atop';
-      const n = variant & 4 ? 11 : 5;
-      const seed = defId.length * 31 + defId.charCodeAt(2) * 7;
+      const heavy = (variant & 4) !== 0;
+      const seed = defId.length * 31 + defId.charCodeAt(2) * 7 + defId.charCodeAt(defId.length - 1);
+      if (heavy) { ctx.fillStyle = 'rgba(20,14,10,0.24)'; ctx.fillRect(0, 0, c.width, c.height); }
+      // soot blotches + cracks scattered over the silhouette
+      const n = heavy ? 12 : 6;
       for (let i = 0; i < n; i++) {
-        const x = hash2(seed + i, 3) * body.c.width, y = (0.15 + hash2(seed + i, 9) * 0.8) * body.c.height;
-        const r = (6 + hash2(seed + i, 17) * 12) * sc;
+        const x = hash2(seed + i, 3) * c.width, y = (0.12 + hash2(seed + i, 9) * 0.82) * c.height;
+        const r = (6 + hash2(seed + i, 17) * 13) * sc;
         const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-        g.addColorStop(0, 'rgba(12,10,9,0.78)');
+        g.addColorStop(0, 'rgba(12,10,9,0.8)');
         g.addColorStop(1, 'rgba(12,10,9,0)');
         ctx.fillStyle = g;
         ctx.fillRect(x - r, y - r, r * 2, r * 2);
-        ctx.strokeStyle = 'rgba(10,8,8,0.6)';
+        ctx.strokeStyle = 'rgba(8,6,6,0.7)';
         ctx.lineWidth = Math.max(1, sc * 0.6);
         ctx.beginPath();
         ctx.moveTo(x, y);
         ctx.lineTo(x + (hash2(seed + i, 23) - 0.5) * r, y + r * 0.5);
         ctx.lineTo(x + (hash2(seed + i, 29) - 0.5) * r * 1.6, y + r);
+        ctx.lineTo(x + (hash2(seed + i, 31) - 0.5) * r * 2.2, y + r * 1.5);
         ctx.stroke();
       }
+      // blown-out holes at the hot points, glowing at the rim when the building is still powered
+      const holes = Math.min(base.hot.length, heavy ? 4 : 2);
+      for (let i = 0; i < holes; i++) {
+        const p = base.hot[i];
+        const hx = (body.ox + (p[0] - p[1]) * HW) * sc, hy = (body.oy + (p[0] + p[1]) * HH - (p[2] - 0.12) * ZPX) * sc;
+        const r = (heavy ? 9 : 6.5) * sc * (0.8 + hash2(seed + i, 41) * 0.5);
+        ctx.fillStyle = 'rgba(9,8,8,0.92)';
+        ctx.beginPath();
+        const k = 9;
+        for (let j = 0; j < k; j++) {
+          const a = (j / k) * Math.PI * 2, rr = r * (0.55 + hash2(seed + i * 7 + j, 43) * 0.6);
+          const px = hx + Math.cos(a) * rr, py = hy + Math.sin(a) * rr * 0.7;
+          if (j) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+        }
+        ctx.closePath(); ctx.fill();
+        if (!(variant & 1)) {
+          const g = ctx.createRadialGradient(hx, hy, r * 0.2, hx, hy, r * 1.5);
+          g.addColorStop(0, 'rgba(255,150,50,0.5)'); g.addColorStop(0.5, 'rgba(255,90,20,0.22)'); g.addColorStop(1, 'rgba(255,90,20,0)');
+          ctx.fillStyle = g; ctx.fillRect(hx - r * 1.5, hy - r * 1.5, r * 3, r * 3);
+        }
+        // bent struts sticking out of the hole
+        ctx.strokeStyle = 'rgba(14,12,11,0.9)'; ctx.lineWidth = Math.max(1, sc * 0.8);
+        ctx.beginPath();
+        for (let j = 0; j < 3; j++) { const a = hash2(seed + i * 5 + j, 47) * 6.28; ctx.moveTo(hx, hy); ctx.lineTo(hx + Math.cos(a) * r * 1.2, hy + Math.sin(a) * r * 0.9); }
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+      body = this.account({ c, ox: body.ox, oy: body.oy, w: body.w, h: body.h, s: body.s });
     }
-    ctx.globalCompositeOperation = 'source-over';
     const w = def ? def.footprint.w : 1, h = def ? def.footprint.h : 1;
-    b = { art, pal, body: this.account(body), shadow: this.account(buildingShadow(m, w, h)), turret: [], height: defHeight(defId), w, h, gen: this.gen };
+    b = { art, pal: palOf(color), body, shadow: base.shadow, turret: [], height: defHeight(defId), w, h, gen: this.gen, hot: base.hot, ferrum: def?.faction === 'ferrum' };
     this.buildings.set(key, b);
     return b;
   }
@@ -265,6 +327,28 @@ export class SpriteBank {
     }
     return c;
   }
+}
+
+/** Pick up to five well-separated, camera-facing spots on a model for damage effects (top-front of its bulkier parts). */
+function hotPoints(m: Model): number[][] {
+  const H = m.height();
+  const cand: { x: number; y: number; z: number; w: number }[] = [];
+  for (const p of m.parts) {
+    const dx = p.lx1 - p.lx0, dy = p.ly1 - p.ly0, dz = p.z1 - p.z0;
+    if (p.emis || p.alpha < 0.9 || dz < 0.14 || dx < 0.2 || dy < 0.2 || p.z1 < 0.3) continue;
+    // toward the camera-facing upper corner so the effect sits on the visible skin
+    cand.push({ x: p.cx + dx * 0.2, y: p.cy + dy * 0.2, z: p.z1 - dz * 0.2, w: dx * dy * (0.6 + dz) + (p.z1 / Math.max(0.5, H)) * 0.3 });
+  }
+  cand.sort((a, b) => b.w - a.w);
+  const out: number[][] = [];
+  for (const c of cand) {
+    if (out.length >= 5) break;
+    let ok = true;
+    for (const o of out) if (Math.hypot(o[0] - c.x, o[1] - c.y, (o[2] - c.z) * 0.6) < 0.55) { ok = false; break; }
+    if (ok) out.push([c.x, c.y, c.z]);
+  }
+  if (out.length === 0) out.push([0, 0, H * 0.6]);
+  return out;
 }
 
 /** Fill the current path builder with a feathered edge of bounded extent (no canvas blur → no clipped tails). */
