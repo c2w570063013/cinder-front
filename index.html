@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>燼原戰線 Cinder Front</title>
+<meta name="claude:viewport-fit-sides" content="cover" />
+<meta name="description" content="燼原戰線 Cinder Front — 原創等角視角即時戰略遊戲。建設基地、採集金礦、管理電力、率領兩大陣營、六個國家,在高地、懸崖與冰原上決戰。瀏覽器免安裝,立即開戰。" />
+<meta property="og:title" content="燼原戰線 Cinder Front" />
+<meta property="og:description" content="原創等角即時戰略。兩大陣營、六個國家、九張立體地形戰場、AI 對手,瀏覽器免安裝立即開戰。" />
+<meta name="theme-color" content="#0c0f12" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800;900&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@700;900&display=swap" />
+  <script type="module" crossorigin src="./assets/index-CixMEUrZ.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-4JNA22sF.css">
+</head>
+<body>
+
+<header class="nav" id="top">
+  <div class="nav-in">
+    <a class="brand" href="#top" aria-label="燼原戰線 首頁" data-i18n-aria="aria.home">
+      <canvas class="brand-mark" width="56" height="56" aria-hidden="true"></canvas>
+      <span class="brand-zh">燼原戰線</span>
+      <span class="brand-en">CINDER FRONT</span>
+    </a>
+    <nav class="nav-links" aria-label="主選單" data-i18n-aria="aria.nav">
+      <a href="#features" data-i18n="nav.features">特色</a>
+      <a href="#factions" data-i18n="nav.factions">陣營</a>
+      <a href="#nations" data-i18n="nav.nations">國家</a>
+      <a href="#roster" data-i18n="nav.roster">單位</a>
+      <a href="#maps" data-i18n="nav.maps">戰場</a>
+      <a href="#controls" data-i18n="nav.controls">操作</a>
+    </nav>
+    <div class="lang-switch" role="group" aria-label="語言 Language" id="lang-switch"></div>
+    <a class="btn btn-sm btn-ember" href="play/index.html" data-i18n="nav.play">立即開戰</a>
+  </div>
+</header>
+
+<main>
+
+<section class="hero" aria-labelledby="hero-title">
+  <canvas class="hero-canvas" id="hero-canvas" aria-hidden="true"></canvas>
+  <div class="hero-shade" aria-hidden="true"></div>
+  <div class="hero-in">
+    <p class="eyebrow" data-i18n="hero.eyebrow">原創等角視角即時戰略 · Isometric RTS</p>
+    <h1 id="hero-title">
+      <span class="title-zh">燼原戰線</span>
+      <span class="title-en">CINDER&nbsp;FRONT</span>
+    </h1>
+    <p class="hero-lede" data-i18n="hero.lede">大地早已燒成灰燼,地底的金礦是最後的資源。建起基地、架設電網、派出採礦車,在餘燼之上與敵軍爭奪每一片礦脈。</p>
+    <div class="hero-cta">
+      <a class="btn btn-ember btn-lg" href="play/index.html">
+        <span data-i18n="hero.play">在瀏覽器開戰</span>
+        <small data-i18n="hero.playSub">免安裝 · 免費</small>
+      </a>
+      <a class="btn btn-ghost btn-lg" href="#download">
+        <span data-i18n="hero.mac">下載 macOS 版</span>
+        <small data-i18n="hero.macSub">支援區域網路對戰</small>
+      </a>
+    </div>
+    <p class="hero-note desk-hint" data-i18n="hero.note">需要鍵盤與滑鼠,建議使用桌面版 Chrome、Safari 或 Edge。</p>
+  </div>
+  <aside class="live" id="live" aria-live="off">
+    <div class="live-head"><span class="live-dot"></span><b data-i18n="live.title">即時戰況</b><span id="live-map" data-i18n="live.preparing">準備中…</span></div>
+    <div class="live-row" data-p="0"><i style="--c:var(--helion)"></i><span data-i18n="live.h">赫利昂協約</span><em id="live-a">—</em></div>
+    <div class="live-row" data-p="1"><i style="--c:var(--ember)"></i><span data-i18n="live.f">鐵燼辛迪加</span><em id="live-b">—</em></div>
+    <div class="live-foot"><span id="live-clock">00:00</span><span data-i18n="live.caption">背景是遊戲引擎即時運算的 AI 對戰</span></div>
+  </aside>
+</section>
+
+<section class="telemetry" aria-label="遊戲規模" data-i18n-aria="aria.tele">
+  <div class="wrap tele-grid" id="tele">
+    <div><b data-stat="factions">2</b><span data-i18n="tele.factions">非對稱陣營</span></div>
+    <div><b data-stat="units">24</b><span data-i18n="tele.units">種單位</span></div>
+    <div><b data-stat="buildings">28</b><span data-i18n="tele.buildings">種建築與防禦</span></div>
+    <div><b data-stat="maps">6</b><span data-i18n="tele.maps">張戰場</span></div>
+    <div><b data-stat="nations">6</b><span data-i18n="tele.nations">個國家 · 各有專屬單位</span></div>
+    <div><b>0</b><span data-i18n="tele.assets">個外部素材 · 全由程式繪製與合成</span></div>
+  </div>
+</section>
+
+<section class="section" id="features" aria-labelledby="features-title">
+  <div class="wrap">
+    <header class="sec-head">
+      <p class="eyebrow" data-i18n="feat.eyebrow">作戰要點</p>
+      <h2 id="features-title" data-i18n="feat.title">經典即時戰略的手感,全新的世界</h2>
+      <p class="sec-lede" data-i18n="feat.lede">從第一座電站到最後一發超級武器,每一個決定都關乎資金、電力與時機。</p>
+    </header>
+    <div class="feat-grid">
+      <article class="feat feat-wide">
+        <h3 data-i18n="feat.ore.h">金礦經濟</h3>
+        <p data-i18n="feat.ore.p">精煉廠落成時會附贈一輛採礦車。採礦車在礦區與精煉廠之間往返,每趟把金礦換成資金。保護好牠們,經濟就不會斷線;偷襲對手的礦車,往往比正面強攻更致命。</p>
+        <dl class="spec" data-i18n="feat.ore.spec"><div><dt>赫利昂採礦車</dt><dd>載量 20</dd></div><div><dt>鐵燼運礦車</dt><dd>載量 24 · 1100 HP</dd></div></dl>
+      </article>
+      <article class="feat">
+        <h3 data-i18n="feat.power.h">電力網路</h3>
+        <p data-i18n="feat.power.p">每座建築都要吃電。電力不足時生產變慢,磁軌砲塔、防空陣地等高耗電防禦會直接停擺。</p>
+      </article>
+      <article class="feat">
+        <h3 data-i18n="feat.tech.h">科技樹</h3>
+        <p data-i18n="feat.tech.p">訓練營、機械廠、偵測陣列、研究所逐層解鎖。先攀科技還是先出兵,由你決定。</p>
+      </article>
+      <article class="feat">
+        <h3 data-i18n="feat.fog.h">戰爭迷霧</h3>
+        <p data-i18n="feat.fog.p">沒有視野就沒有情報。派遊騎偵察,或用雷達建築的偵察掃描暫時揭開迷霧。</p>
+      </article>
+      <article class="feat">
+        <h3 data-i18n="feat.capture.h">佔領與修復</h3>
+        <p data-i18n="feat.capture.p">工程師可以潛入敵方建築直接奪取,也能瞬間修好己方受損的設施。</p>
+      </article>
+      <article class="feat feat-wide feat-super">
+        <h3 data-i18n="feat.super.h">超級武器</h3>
+        <p data-i18n="feat.super.p">科技頂端是一擊扭轉戰局的手段。赫利昂的<b>軌道信標</b>召喚天基光矛貫穿目標;鐵燼的<b>震地鑽井</b>引發地震波,粉碎範圍內的建築與載具。對手充能完畢前,你只有一次機會。</p>
+        <dl class="spec" data-i18n="feat.super.spec"><div><dt>天基光矛</dt><dd>1100 傷害 · 半徑 3.5 格</dd></div><div><dt>地震波</dt><dd>800 傷害 · 半徑 5 格</dd></div><div><dt>充能時間</dt><dd>7 分鐘</dd></div></dl>
+      </article>
+      <article class="feat feat-wide">
+        <h3 data-i18n="feat.height.h">高地與懸崖</h3>
+        <p data-i18n="feat.height.p">戰場有高低之分。懸崖無法攀爬,只能經由坡道上下,坡道就是天然的隘口。站上高地射程更遠、看得更遠;從低處往上打不但吃虧,還看不清崖頂的敵人,必須先派人摸上去偵察。</p>
+        <dl class="spec" data-i18n="feat.height.spec"><div><dt>高地射程</dt><dd>每層 +1 格(拋射 +1.5)</dd></div><div><dt>仰攻傷害</dt><dd>−25%</dd></div><div><dt>高地視野</dt><dd>每層 +2 格</dd></div></dl>
+      </article>
+      <article class="feat">
+        <h3 data-i18n="feat.art.h">遠程重砲</h3>
+        <p data-i18n="feat.art.p">赫利昂的子午砲台與鐵燼的窯爐臼砲射程超過 13 格,架在高地上能轟到 15 格外,但近身就打不到。選對山頭,一門砲就能封鎖整條通道。</p>
+      </article>
+      <article class="feat">
+        <h3 data-i18n="feat.ice.h">冰原與峽谷</h3>
+        <p data-i18n="feat.ice.p">雪地地圖的冰湖與冰河可以通行,但輪式載具在冰上會慢一半,也不能在冰上蓋建築。沙漠峽谷則把戰線壓成一條谷底通道。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section factions" id="factions" aria-labelledby="factions-title">
+  <div class="wrap">
+    <header class="sec-head">
+      <p class="eyebrow" data-i18n="fac.eyebrow">兩大陣營</p>
+      <h2 id="factions-title" data-i18n="fac.title">精準對蠻力</h2>
+      <p class="sec-lede" data-i18n="fac.lede">兩邊的單位、建築與超級武器完全不同,打法也截然相反。</p>
+    </header>
+    <div class="face-off">
+      <article class="faction f-helion">
+        <p class="f-en">HELION ACCORD</p>
+        <h3 data-i18n="fac.h.name">赫利昂協約</h3>
+        <p class="f-motto" data-i18n="fac.h.motto">精準、機動、能量武器。</p>
+        <p data-i18n="fac.h.p">單位較脆,但射程與速度佔優。磁軌砲、垂直起降砲艇與遠程自走砲,擅長在對手靠近前把他們拆成零件。</p>
+        <ul class="f-keys" data-i18n="fac.h.keys">
+          <li><b>主力</b>標槍坦克 · 裁決者磁軌砲</li>
+          <li><b>空中</b>紅隼砲艇</li>
+          <li><b>超武</b>軌道信標 · 天基光矛</li>
+        </ul>
+        <div class="f-icons" data-faction="helion"></div>
+      </article>
+      <div class="vs" aria-hidden="true">VS</div>
+      <article class="faction f-ferrum">
+        <p class="f-en">FERRUM SYNDICATE</p>
+        <h3 data-i18n="fac.f.name">鐵燼辛迪加</h3>
+        <p class="f-motto" data-i18n="fac.f.motto">重甲、烈焰、蠻力。</p>
+        <p data-i18n="fac.f.p">單位便宜耐打,但行動遲緩。火焰兵、噴火坦克、多管火箭與超重型巨像,用數量與裝甲碾過一切。</p>
+        <ul class="f-keys" data-i18n="fac.f.keys">
+          <li><b>主力</b>鐵鎚坦克 · 巨像</li>
+          <li><b>空中</b>禿鷲轟炸艇</li>
+          <li><b>超武</b>震地鑽井 · 地震波</li>
+        </ul>
+        <div class="f-icons" data-faction="ferrum"></div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="nations" aria-labelledby="nations-title">
+  <div class="wrap">
+    <header class="sec-head">
+      <p class="eyebrow" data-i18n="nat.eyebrow">六個國家</p>
+      <h2 id="nations-title" data-i18n="nat.title">同一陣營,三種打法</h2>
+      <p class="sec-lede" data-i18n="nat.lede">開局前為陣營選一個國家。每個國家有一項被動加成,外加一種只有它能生產的專屬單位。</p>
+    </header>
+    <div class="nations" id="nations-grid"></div>
+  </div>
+</section>
+
+<section class="section" id="roster" aria-labelledby="roster-title">
+  <div class="wrap">
+    <header class="sec-head sec-head-row">
+      <div>
+        <p class="eyebrow" data-i18n="roster.eyebrow">單位圖鑑</p>
+        <h2 id="roster-title" data-i18n="roster.title">所有單位一覽</h2>
+      </div>
+      <div class="tabs" role="tablist" aria-label="選擇陣營" data-i18n-aria="aria.tabs">
+        <button class="tab" role="tab" id="tab-helion" aria-selected="true" data-faction="helion" data-i18n="roster.tabH">赫利昂協約</button>
+        <button class="tab" role="tab" id="tab-ferrum" aria-selected="false" data-faction="ferrum" data-i18n="roster.tabF">鐵燼辛迪加</button>
+      </div>
+    </header>
+    <div class="roster" id="roster-grid" role="tabpanel" aria-labelledby="tab-helion"></div>
+    <p class="fine" data-i18n="roster.fine">圖示與數值直接取自遊戲資料,與遊戲內完全一致。價格單位為資金,速度與視野單位為格。</p>
+  </div>
+</section>
+
+<section class="section" id="maps" aria-labelledby="maps-title">
+  <div class="wrap">
+    <header class="sec-head">
+      <p class="eyebrow" data-i18n="maps.eyebrow">戰場</p>
+      <h2 id="maps-title" data-i18n="maps.title">九張立體地形戰場</h2>
+      <p class="sec-lede" data-i18n="maps.lede">從雙人速攻的隘口、冰封的湖面,到四人混戰的雪原高地與沙漠峽谷。每張地圖都有值得爭奪的高地;每次開局都可換一組隨機種子,地形細節隨之變化。</p>
+    </header>
+    <div class="atlas" id="atlas"></div>
+  </div>
+</section>
+
+<section class="section" id="controls" aria-labelledby="controls-title">
+  <div class="wrap controls">
+    <header class="sec-head">
+      <p class="eyebrow" data-i18n="ctl.eyebrow">上手指南</p>
+      <h2 id="controls-title" data-i18n="ctl.title">三分鐘學會指揮</h2>
+      <p class="sec-lede" data-i18n="ctl.lede">左鍵選取、右鍵下令。開局先把基地車展開,蓋電站、精煉廠,再開始出兵。</p>
+    </header>
+    <div class="ctl-grid">
+      <div class="ctl-group">
+        <h3 data-i18n="ctl.orders">命令</h3>
+        <ul>
+          <li><kbd>A</kbd><span data-i18n="ctl.am">攻擊移動</span></li>
+          <li><kbd>S</kbd><span data-i18n="ctl.stop">停止</span></li>
+          <li><kbd>G</kbd><span data-i18n="ctl.guard">守備</span></li>
+          <li><kbd>D</kbd><span data-i18n="ctl.deploy">部署 · 收起基地 · 翔鷺降落</span></li>
+          <li><kbd>X</kbd><span data-i18n="ctl.scatter">散開</span></li>
+          <li><kbd>Z</kbd><span data-i18n="ctl.waypoint">按住設定路徑點</span></li>
+        </ul>
+      </div>
+      <div class="ctl-group">
+        <h3 data-i18n="ctl.select">選取</h3>
+        <ul>
+          <li><kbd>P</kbd><span data-i18n="ctl.army">選取全部部隊</span></li>
+          <li><kbd>T</kbd><span data-i18n="ctl.same">選取同類單位</span></li>
+          <li><kbd>N</kbd><kbd>M</kbd><span data-i18n="ctl.cycle">循環切換單位</span></li>
+          <li><kbd>⌘</kbd><kbd>0–9</kbd><span data-i18n="ctl.groups">編成小隊,按數字叫出</span></li>
+        </ul>
+      </div>
+      <div class="ctl-group">
+        <h3 data-i18n="ctl.build">建造</h3>
+        <ul>
+          <li><kbd>Q</kbd><span data-i18n="ctl.structures">建築</span></li>
+          <li><kbd>W</kbd><span data-i18n="ctl.defenses">防禦</span></li>
+          <li><kbd>E</kbd><span data-i18n="ctl.infantry">步兵</span></li>
+          <li><kbd>R</kbd><span data-i18n="ctl.vehicles">載具與飛行器</span></li>
+          <li><kbd>K</kbd><kbd>L</kbd><span data-i18n="ctl.repair">修理 · 出售</span></li>
+        </ul>
+      </div>
+      <div class="ctl-group">
+        <h3 data-i18n="ctl.camera">鏡頭</h3>
+        <ul>
+          <li><kbd>←</kbd><kbd>→</kbd><span data-i18n="ctl.scroll">捲動地圖</span></li>
+          <li><kbd>H</kbd><span data-i18n="ctl.home">回到基地</span></li>
+          <li><kbd>F</kbd><span data-i18n="ctl.follow">跟隨單位</span></li>
+          <li><kbd>+</kbd><kbd>−</kbd><span data-i18n="ctl.zoom">縮放</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section download" id="download" aria-labelledby="download-title">
+  <div class="wrap dl-grid">
+    <article class="dl-card dl-web">
+      <p class="eyebrow" data-i18n="dl.web.eyebrow">瀏覽器版</p>
+      <h2 id="download-title" data-i18n="dl.web.title">打開就能玩</h2>
+      <p data-i18n="dl.web.p">不用安裝、不用註冊。選陣營、選國家、選地圖、選 AI 難度,馬上開始一場遭遇戰。</p>
+      <a class="btn btn-ember btn-lg" href="play/index.html"><span data-i18n="dl.web.btn">立即開戰</span><small data-i18n="dl.web.sub">約 0.5 MB · 載入只需幾秒</small></a>
+    </article>
+    <article class="dl-card dl-mac">
+      <p class="eyebrow" data-i18n="dl.mac.eyebrow">macOS 原生版</p>
+      <h2 data-i18n="dl.mac.title">和朋友在區域網路對戰</h2>
+      <p data-i18n="dl.mac.p">原生 macOS 應用程式,支援同一網路下多人對戰(自動搜尋房間)。Apple Silicon,macOS 13 以上。</p>
+      <a class="btn btn-ghost btn-lg" id="mac-dl" href="download/CinderFront-macOS.zip" hidden><span data-i18n="dl.mac.btn">下載 macOS 版</span><small id="mac-size">.zip</small></a>
+      <p class="dl-soon" id="mac-soon" data-i18n="dl.mac.soon">macOS 版下載即將開放。</p>
+      <p class="fine" id="mac-note" hidden data-i18n="dl.mac.note">首次開啟若出現「無法驗證開發者」,請到「系統設定 › 隱私權與安全性」點選「強制打開」。</p>
+    </article>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <div class="foot-brand"><span class="brand-zh">燼原戰線</span><span class="brand-en">CINDER FRONT</span></div>
+    <p data-i18n="foot.p">原創作品。所有美術由程式即時繪製,所有音效與音樂由程式合成,沒有使用任何外部素材。</p>
+    <a href="#top" class="foot-top" data-i18n="foot.top">回到頂部 ↑</a>
+  </div>
+</footer>
+
+</body>
+</html>
